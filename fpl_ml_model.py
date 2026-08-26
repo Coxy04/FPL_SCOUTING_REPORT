@@ -491,7 +491,7 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
                     "bonus": lagged["bonus"],
                     "was_home": was_home,
                     "difficulty": difficulty_pair[0] if was_home else difficulty_pair[1],
-                    "now_cost": player.get("now_cost", 0),
+                    "now_cost": match.get("value") or player.get("now_cost", 0),
                     "team_xg_for_form": own_form[0],
                     "team_xg_against_form": own_form[1],
                     "opp_xg_for_form": opp_form[0],
