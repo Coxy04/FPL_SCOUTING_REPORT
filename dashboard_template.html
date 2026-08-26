@@ -260,7 +260,7 @@
         <div class="table-scroll">
           <table id="gems-table">
             <thead><tr>
-              <th>Player</th><th>Pos</th><th class="num">Owned</th><th class="num">Pred.</th><th class="num">Gap</th>
+              <th>Player</th><th>Pos</th><th class="num">Owned</th><th class="num">Actual</th><th class="num">Pred.</th><th class="num">Gap</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -273,7 +273,7 @@
     <div class="section-head">
       <h2>Full Predictions</h2>
     </div>
-    <p class="section-intro">Every player with a scheduled fixture next gameweek, ranked by predicted points. Search, filter, and sort to build your own shortlist.</p>
+    <p class="section-intro">Every player with a scheduled fixture, ranked by predicted points. Search, filter, sort, and pick how far ahead to look.</p>
     <div class="table-toolbar">
       <input class="search-input" id="search" type="text" placeholder="Search player or team…" />
       <select class="select-input" id="filter-position">
@@ -283,6 +283,7 @@
         <option value="MID">MID</option>
         <option value="FWD">FWD</option>
       </select>
+      <select class="select-input" id="filter-horizon"></select>
       <span class="row-count" id="row-count"></span>
     </div>
     <div class="table-scroll table-body-scroll">
@@ -293,7 +294,8 @@
           <th data-key="position">Pos</th>
           <th class="num" data-key="now_cost">Cost</th>
           <th class="num" data-key="ownership_pct">Owned %</th>
-          <th class="num" data-key="predicted_points">Pred. Pts</th>
+          <th class="num" data-key="season_points">Actual Pts</th>
+          <th class="num" data-key="_predShown" id="pred-col-header">Pred. Pts</th>
           <th class="num" data-key="points_per_million">Pts/£m</th>
           <th class="num" data-key="underperformance_gap">Gap</th>
           <th class="num" data-key="difficulty">FDR</th>
@@ -341,7 +343,7 @@ function esc(s) { return String(s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&
 
 // ---------- stat tiles ----------
 (function renderTiles() {
-  const topScorer = [...PLAYERS].sort((a, b) => b.predicted_points - a.predicted_points)[0];
+  const topScorer = PLAYERS.filter(p => p.weeks_ahead === 1).sort((a, b) => b.predicted_points - a.predicted_points)[0];
   const tiles = [
     { label: "Next Gameweek", value: "GW " + (META.next_event ?? "–"), sub: `${META.predicted_players} players modeled` },
     { label: "Hidden Gems Found", value: META.gems_found, sub: "under 10% owned", gold: true },
@@ -373,7 +375,7 @@ function renderPositionChips() {
 
 // ---------- scatter chart ----------
 function renderScatter() {
-  const data = PLAYERS.filter(p => p.predicted_points > 0 && (!activePosition || p.position === activePosition));
+  const data = PLAYERS.filter(p => p.weeks_ahead === 1 && p.predicted_points > 0 && (!activePosition || p.position === activePosition));
   const W = 520, H = 360, M = { t: 14, r: 14, b: 34, l: 40 };
   const plotW = W - M.l - M.r, plotH = H - M.t - M.b;
 
@@ -433,13 +435,14 @@ function renderScatter() {
 
 // ---------- gems table ----------
 (function renderGemsTable() {
-  const gems = PLAYERS.filter(p => p.is_gem).sort((a, b) => b.underperformance_gap - a.underperformance_gap).slice(0, 20);
+  const gems = PLAYERS.filter(p => p.weeks_ahead === 1 && p.is_gem).sort((a, b) => b.underperformance_gap - a.underperformance_gap).slice(0, 20);
   const tbody = document.querySelector("#gems-table tbody");
   tbody.innerHTML = gems.map(p => `
     <tr>
       <td>${esc(p.web_name)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
       <td class="num">${fmt(p.ownership_pct)}%</td>
+      <td class="num">${fmt(p.season_points, 0)}</td>
       <td class="num">${fmt(p.predicted_points)}</td>
       <td class="num gap-positive">+${fmt(p.underperformance_gap)}</td>
     </tr>
@@ -447,16 +450,32 @@ function renderScatter() {
 })();
 
 // ---------- full predictions table ----------
-let sortKey = "predicted_points", sortDir = -1, searchTerm = "", filterPos = "";
+let sortKey = "_predShown", sortDir = -1, searchTerm = "", filterPos = "", horizon = "1";
+const maxWeeksAhead = META.max_weeks_ahead || 1;
+
+function renderHorizonOptions() {
+  const el = document.getElementById("filter-horizon");
+  const opts = [];
+  for (let w = 1; w <= maxWeeksAhead; w++) {
+    opts.push(`<option value="${w}">${w === 1 ? "Next Gameweek" : "GW +" + w}</option>`);
+  }
+  if (maxWeeksAhead > 1) opts.push(`<option value="total">Next ${maxWeeksAhead} GWs (Total)</option>`);
+  el.innerHTML = opts.join("");
+  el.value = horizon;
+}
+
 function renderFullTable() {
-  let rows = PLAYERS.filter(p => p.event === META.next_event || META.next_event === null);
+  const isTotal = horizon === "total";
+  let rows = PLAYERS.filter(p => isTotal ? p.weeks_ahead === 1 : p.weeks_ahead === Number(horizon));
+  rows = rows.map(p => ({ ...p, _predShown: isTotal ? p.predicted_points_5gw : p.predicted_points }));
   if (filterPos) rows = rows.filter(p => p.position === filterPos);
   if (searchTerm) {
     const t = searchTerm.toLowerCase();
     rows = rows.filter(p => p.web_name.toLowerCase().includes(t) || p.team_name.toLowerCase().includes(t));
   }
-  rows = rows.slice().sort((a, b) => (a[sortKey] - b[sortKey]) * sortDir);
+  rows.sort((a, b) => (a[sortKey] - b[sortKey]) * sortDir);
 
+  document.getElementById("pred-col-header").textContent = isTotal ? `Pred. Pts (${maxWeeksAhead} GW)` : "Pred. Pts";
   document.getElementById("row-count").textContent = `${rows.length} players`;
   document.querySelectorAll("#full-table th[data-key]").forEach(th => {
     th.classList.toggle("sorted", th.dataset.key === sortKey);
@@ -472,7 +491,8 @@ function renderFullTable() {
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
       <td class="num">${fmtCost(p.now_cost)}</td>
       <td class="num">${fmt(p.ownership_pct)}%</td>
-      <td class="num">${fmt(p.predicted_points)}</td>
+      <td class="num">${fmt(p.season_points, 0)}</td>
+      <td class="num">${fmt(p._predShown)}</td>
       <td class="num">${fmt(p.points_per_million)}</td>
       <td class="num${p.underperformance_gap > 0 ? " gap-positive" : ""}">${p.underperformance_gap > 0 ? "+" : ""}${fmt(p.underperformance_gap)}</td>
       <td class="num">${p.difficulty}</td>
@@ -486,6 +506,7 @@ document.querySelectorAll("#full-table th[data-key]").forEach(th => {
     renderFullTable();
   });
 });
+document.getElementById("filter-horizon").addEventListener("change", e => { horizon = e.target.value; renderFullTable(); });
 document.getElementById("search").addEventListener("input", e => { searchTerm = e.target.value; renderFullTable(); });
 document.getElementById("filter-position").addEventListener("change", e => { filterPos = e.target.value; renderFullTable(); });
 
@@ -512,6 +533,7 @@ function renderFiPositionChips() {
 
 renderPositionChips();
 renderScatter();
+renderHorizonOptions();
 renderFullTable();
 renderFiPositionChips();
 renderFeatureImportance();

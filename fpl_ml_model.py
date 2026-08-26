@@ -23,6 +23,7 @@ UNDERSTAT_SEASON = "2026"
 PRIOR_SEASON_UNDERSTAT = "2025"
 PRIOR_SEASON_ARCHIVE = "2025-26"
 TEAM_FORM_WINDOW = 6
+MAX_FUTURE_GAMEWEEKS = 5
 NAME_MATCH_CUTOFF = 0.85
 PRIOR_SEASON_NAME_MATCH_CUTOFF = 0.9
 
@@ -472,11 +473,15 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
 
         own_understat_team = UNDERSTAT_TEAM_MAP.get(player["team_name"])
         own_form = current_team_form.get(own_understat_team, (0, 0))
-        for fixture in fixtures:
-            if fixture["finished"]:
-                continue
-            if player["team"] not in (fixture["team_h"], fixture["team_a"]):
-                continue
+        season_points = player.get("total_points", 0)
+
+        team_fixtures = [
+            f for f in fixtures
+            if not f["finished"] and player["team"] in (f["team_h"], f["team_a"])
+        ]
+        team_fixtures.sort(key=lambda f: (f.get("event") or 9999, f.get("kickoff_time") or ""))
+
+        for weeks_ahead, fixture in enumerate(team_fixtures[:MAX_FUTURE_GAMEWEEKS], start=1):
             was_home = player["team"] == fixture["team_h"]
             pair = difficulty_lookup[fixture["id"]]
             opponent_id = fixture["team_a"] if was_home else fixture["team_h"]
@@ -485,6 +490,7 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             row = {
                 "id": player["id"],
                 "web_name": player["web_name"],
+                "weeks_ahead": weeks_ahead,
                 "team_name": player["team_name"],
                 "position": POSITION_MAP.get(player["element_type"]),
                 "now_cost": player.get("now_cost", 0),
@@ -507,9 +513,9 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
                 "recent_points_avg": averages.get("total_points", 0),
                 "ownership_pct": float(player.get("selected_by_percent", 0) or 0),
                 "goals_vs_npxg90": actual_goals_per90 - player_stats.get("npxg90", 0),
+                "season_points": season_points,
             }
             rows.append(row)
-            break
         time.sleep(0.05)
     return pd.DataFrame(rows)
 
@@ -623,19 +629,22 @@ def main():
             upcoming.loc[mask, "predicted_points"] = model.predict(featured_upcoming.loc[mask, POSITION_FEATURES])
     upcoming["predicted_points"] = upcoming["predicted_points"].clip(0, 15)
     upcoming["points_per_million"] = upcoming["predicted_points"] / (upcoming["now_cost"] / 10)
+    upcoming["predicted_points_5gw"] = upcoming.groupby("id")["predicted_points"].transform("sum")
 
     # "Hidden gems": the model rates their underlying process (xG/xA/team form) well above what
     # they've actually returned in points recently -- a signal they may be about to click, before
     # the price/ownership catches up. goals_vs_npxg90 flags pure finishing-luck separately.
+    # Anchored to each player's nearest fixture only, not diluted across all 5 gameweeks.
     upcoming["underperformance_gap"] = upcoming["predicted_points"] - upcoming["recent_points_avg"]
 
-    output = upcoming.sort_values(["event", "predicted_points"], ascending=[True, False])
+    output = upcoming.sort_values(["weeks_ahead", "predicted_points"], ascending=[True, False])
     output.to_csv(OUTPUT_FILE, index=False)
 
-    gems = upcoming[
-        (upcoming["ownership_pct"] < GEM_OWNERSHIP_MAX)
-        & (upcoming["predicted_points"] >= GEM_MIN_PREDICTED_POINTS)
-        & (upcoming["underperformance_gap"] > 0)
+    nearest = upcoming[upcoming["weeks_ahead"] == 1]
+    gems = nearest[
+        (nearest["ownership_pct"] < GEM_OWNERSHIP_MAX)
+        & (nearest["predicted_points"] >= GEM_MIN_PREDICTED_POINTS)
+        & (nearest["underperformance_gap"] > 0)
     ].sort_values("underperformance_gap", ascending=False)
     gems.to_csv(GEMS_OUTPUT_FILE, index=False)
     print(f"\nTop hidden gems (rated highly, under {GEM_OWNERSHIP_MAX}% owned, underperforming recent points):")
@@ -652,9 +661,10 @@ def main():
         "training_rows_archive": int((training["source"] != "fpl_live_current_season").sum()),
         "understat_players_matched": int(len(understat_matches)),
         "prior_season_players_matched": int(len(prior_id_map)),
-        "predicted_players": int(len(upcoming)),
+        "predicted_players": int(len(nearest)),
         "gems_found": int(len(gems)),
-        "next_event": int(upcoming["event"].min()) if len(upcoming) else None,
+        "next_event": int(nearest["event"].min()) if len(nearest) else None,
+        "max_weeks_ahead": int(upcoming["weeks_ahead"].max()) if len(upcoming) else 0,
         "top_feature_by_position": {
             position: {
                 "feature": group.iloc[0]["feature"],
