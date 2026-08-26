@@ -75,6 +75,12 @@ FEATURES = [
     "position_FWD",
 ]
 
+# One model per position instead of a single pooled model with position one-hot columns: a
+# defender's clean-sheet/goals-conceded signals and a forward's attacking signals don't compete
+# for the same tree splits this way, and per-position sample sizes (roughly 1,000-4,200 rows
+# each) are large enough that specializing doesn't starve any of them.
+POSITION_FEATURES = [f for f in FEATURES if not f.startswith("position_")]
+
 
 def get_json(session, endpoint):
     response = session.get(f"{BASE_URL}/{endpoint}", timeout=30)
@@ -567,37 +573,55 @@ def main():
         raise RuntimeError("Not enough historical rows to train the model.")
     print(f"Training rows: {len(training)} ({(training['source'] == 'fpl_live_current_season').sum()} current season, {(training['source'] != 'fpl_live_current_season').sum()} from {PRIOR_SEASON_ARCHIVE} archive)")
 
-    model = lgb.LGBMRegressor(
-        objective="regression",
-        n_estimators=250,
-        learning_rate=0.04,
-        num_leaves=15,
-        max_depth=5,
-        min_child_samples=30,
-        reg_lambda=2.0,
-        random_state=42,
-        verbosity=-1,
-    )
-    model.fit(training[FEATURES], training["total_points"])
+    def make_model():
+        return lgb.LGBMRegressor(
+            objective="regression",
+            n_estimators=250,
+            learning_rate=0.04,
+            num_leaves=15,
+            max_depth=5,
+            min_child_samples=30,
+            reg_lambda=2.0,
+            random_state=42,
+            verbosity=-1,
+        )
 
-    importance = pd.DataFrame(
-        {
-            "feature": FEATURES,
-            "importance_gain": model.booster_.feature_importance(importance_type="gain"),
-            "importance_split": model.booster_.feature_importance(importance_type="split"),
-        }
-    ).sort_values("importance_gain", ascending=False)
-    importance["importance_gain_pct"] = (
-        100 * importance["importance_gain"] / importance["importance_gain"].sum()
-    ).round(1)
-    print("\nFeature importance (gain = share of total prediction-error reduction; split = times used to split):")
-    print(importance.to_string(index=False))
+    models = {}
+    importance_tables = []
+    for position in POSITION_MAP.values():
+        subset = training[training["position"] == position]
+        model = make_model()
+        model.fit(subset[POSITION_FEATURES], subset["total_points"])
+        models[position] = model
+
+        position_importance = pd.DataFrame(
+            {
+                "position": position,
+                "feature": POSITION_FEATURES,
+                "importance_gain": model.booster_.feature_importance(importance_type="gain"),
+                "importance_split": model.booster_.feature_importance(importance_type="split"),
+            }
+        ).sort_values("importance_gain", ascending=False)
+        position_importance["importance_gain_pct"] = (
+            100 * position_importance["importance_gain"] / position_importance["importance_gain"].sum()
+        ).round(1)
+        importance_tables.append(position_importance)
+
+        print(f"\n{position} model -- trained on {len(subset)} rows. Top features by gain:")
+        print(position_importance.head(8).to_string(index=False))
+
+    importance = pd.concat(importance_tables, ignore_index=True)
     importance.to_csv("fpl_ml_feature_importance.csv", index=False)
 
     print("\nPredicting upcoming fixtures...")
     upcoming = recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches)
     featured_upcoming = add_features(upcoming)
-    upcoming["predicted_points"] = model.predict(featured_upcoming[FEATURES]).clip(0, 15)
+    upcoming["predicted_points"] = 0.0
+    for position, model in models.items():
+        mask = (upcoming["position"] == position).to_numpy()
+        if mask.any():
+            upcoming.loc[mask, "predicted_points"] = model.predict(featured_upcoming.loc[mask, POSITION_FEATURES])
+    upcoming["predicted_points"] = upcoming["predicted_points"].clip(0, 15)
     upcoming["points_per_million"] = upcoming["predicted_points"] / (upcoming["now_cost"] / 10)
 
     # "Hidden gems": the model rates their underlying process (xG/xA/team form) well above what
@@ -631,8 +655,13 @@ def main():
         "predicted_players": int(len(upcoming)),
         "gems_found": int(len(gems)),
         "next_event": int(upcoming["event"].min()) if len(upcoming) else None,
-        "top_feature": importance.iloc[0]["feature"],
-        "top_feature_gain_pct": float(importance.iloc[0]["importance_gain_pct"]),
+        "top_feature_by_position": {
+            position: {
+                "feature": group.iloc[0]["feature"],
+                "gain_pct": float(group.iloc[0]["importance_gain_pct"]),
+            }
+            for position, group in importance.groupby("position")
+        },
     }
     with open(META_OUTPUT_FILE, "w") as f:
         json.dump(meta, f, indent=2)

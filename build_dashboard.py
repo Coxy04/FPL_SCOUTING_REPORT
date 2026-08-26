@@ -48,7 +48,7 @@ def build():
         player["is_gem"] = player["id"] in gem_ids
 
     features = round_numeric(
-        feature_importance[["feature", "importance_gain_pct"]].to_dict("records")
+        feature_importance[["position", "feature", "importance_gain_pct"]].to_dict("records")
     )
 
     template = Path("dashboard_template.html").read_text(encoding="utf-8")

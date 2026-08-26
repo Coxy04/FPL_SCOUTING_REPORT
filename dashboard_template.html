@@ -305,7 +305,8 @@
 
   <section id="model-section">
     <div class="section-head"><h2>Model Insights</h2></div>
-    <p class="section-intro">What the model actually weighs when scoring a player, by share of prediction-error reduction.</p>
+    <p class="section-intro">Each position is scored by its own model, trained only on that position's history -- a defender's model never sees a forward's rows. What each one actually weighs, by share of prediction-error reduction:</p>
+    <div class="chip-row" id="fi-position-filter"></div>
     <div class="card" id="fi-card"></div>
   </section>
 
@@ -488,21 +489,32 @@ document.querySelectorAll("#full-table th[data-key]").forEach(th => {
 document.getElementById("search").addEventListener("input", e => { searchTerm = e.target.value; renderFullTable(); });
 document.getElementById("filter-position").addEventListener("change", e => { filterPos = e.target.value; renderFullTable(); });
 
-// ---------- feature importance ----------
-(function renderFeatureImportance() {
-  const max = Math.max(...FEATURES.map(f => f.importance_gain_pct));
-  document.getElementById("fi-card").innerHTML = FEATURES.slice(0, 12).map(f => `
+// ---------- feature importance (one model per position) ----------
+let fiPosition = "MID";
+function renderFeatureImportance() {
+  const rows = FEATURES.filter(f => f.position === fiPosition).slice(0, 8);
+  const max = Math.max(...rows.map(f => f.importance_gain_pct));
+  document.getElementById("fi-card").innerHTML = rows.map(f => `
     <div class="fi-row">
       <div class="fi-label">${esc(f.feature)}</div>
       <div class="fi-bar-track"><div class="fi-bar-fill" style="width:${(f.importance_gain_pct / max * 100).toFixed(1)}%"></div></div>
       <div class="fi-value">${fmt(f.importance_gain_pct)}%</div>
     </div>
   `).join("");
-})();
+}
+function renderFiPositionChips() {
+  const el = document.getElementById("fi-position-filter");
+  el.innerHTML = POSITIONS.map(p => `<button class="chip${fiPosition === p ? " active" : ""}" data-pos="${p}">${p}</button>`).join("");
+  el.querySelectorAll(".chip").forEach(btn => {
+    btn.addEventListener("click", () => { fiPosition = btn.dataset.pos; renderFiPositionChips(); renderFeatureImportance(); });
+  });
+}
 
 renderPositionChips();
 renderScatter();
 renderFullTable();
+renderFiPositionChips();
+renderFeatureImportance();
 </script>
 </body>
 </html>
