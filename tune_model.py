@@ -39,7 +39,13 @@ from fpl_ml_model import (
     match_understat_players,
 )
 
-RANDOM_SEED = 42
+# The archive this searches against is static -- it never changes -- so a fixed search seed
+# would make every scheduled run explore the exact same 25 candidates and find the exact same
+# result forever. MODEL_RANDOM_STATE keeps a given candidate's own fit reproducible; SEARCH_SEED
+# is left to vary per run (seeded from the OS) so each scheduled run samples a different slice of
+# the space, letting genuine improvements keep ratcheting in over many weeks.
+MODEL_RANDOM_STATE = 42
+SEARCH_SEED = None
 N_TRIALS = 25
 OUTPUT_FILE = "fpl_ml_tuning.json"
 MODEL_FILE = "fpl_ml_model.py"
@@ -70,7 +76,7 @@ def sample_params(rng):
 
 
 def make_model(params):
-    return lgb.LGBMRegressor(objective="regression", random_state=RANDOM_SEED, verbosity=-1, **params)
+    return lgb.LGBMRegressor(objective="regression", random_state=MODEL_RANDOM_STATE, verbosity=-1, **params)
 
 
 def score_params(params, position_rows, folds):
@@ -133,7 +139,7 @@ def main():
     apply = "--apply" in sys.argv
     print(f"Random search: {N_TRIALS} trials per position, scored across {len(FOLDS)} time-based folds each.")
     print(f"Mode: {'APPLY (will rewrite ' + MODEL_FILE + ' on genuine improvements)' if apply else 'report only'}\n")
-    rng = random.Random(RANDOM_SEED)
+    rng = random.Random(SEARCH_SEED)
     rows = build_dataset()
 
     results = {}

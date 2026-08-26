@@ -10,6 +10,7 @@ Reuses fpl_ml_model.py's own feature-engineering functions rather than reimpleme
 can't silently drift from what the real pipeline does.
 """
 import json
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -33,6 +34,7 @@ from fpl_ml_model import (
 
 HOLDOUT_GAMEWEEKS = 5
 OUTPUT_FILE = "fpl_ml_backtest.json"
+HISTORY_FILE = "fpl_ml_accuracy_history.jsonl"
 
 
 def build_backtest_elements(merged_gw, player_idlist):
@@ -131,6 +133,7 @@ def main():
     print(f"\nOverall (mean across positions): model MAE {overall_model_mae:.3f} vs baseline {overall_baseline_mae:.3f}")
 
     output = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "holdout_gameweeks": HOLDOUT_GAMEWEEKS,
         "split_gw": int(split_point),
         "max_gw": int(max_gw),
@@ -140,7 +143,9 @@ def main():
     }
     with open(OUTPUT_FILE, "w") as f:
         json.dump(output, f, indent=2)
-    print(f"Saved {OUTPUT_FILE}")
+    with open(HISTORY_FILE, "a") as f:
+        f.write(json.dumps(output) + "\n")
+    print(f"Saved {OUTPUT_FILE} (and appended to {HISTORY_FILE})")
 
 
 if __name__ == "__main__":
