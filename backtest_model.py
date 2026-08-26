@@ -25,6 +25,7 @@ from fpl_ml_model import (
     build_prior_season_rows,
     build_team_form_lookup,
     compute_sample_weights,
+    get_half_life_days,
     get_understat_player_stats,
     get_understat_team_matches,
     load_prior_season_archive,
@@ -60,7 +61,9 @@ def build_backtest_elements(merged_gw, player_idlist):
 
 def evaluate_position(train, test, position):
     model = make_model(position)
-    weights = compute_sample_weights(train["date"], as_of=pd.Timestamp(train["date"].max(), tz="UTC"))
+    weights = compute_sample_weights(
+        train["date"], half_life_days=get_half_life_days(position), as_of=pd.Timestamp(train["date"].max(), tz="UTC")
+    )
     model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
     predictions = np.clip(model.predict(test[POSITION_FEATURES]), 0, 15)
     actual = test["total_points"].to_numpy()

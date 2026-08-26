@@ -68,6 +68,10 @@ SEARCH_SPACE = {
     "max_depth": [3, 4, 5, 6, 7],
     "min_child_samples": [10, 20, 30, 50, 80],
     "reg_lambda": [0.5, 1.0, 2.0, 4.0, 8.0],
+    # 30 days is aggressive recency bias; 100000 is effectively "off" (weights ~1.0 across the
+    # whole archive) -- letting the search find whether recency weighting helps at all, and at
+    # what strength, instead of trusting a hand-picked half-life.
+    "half_life_days": [30, 60, 90, 120, 180, 270, 365, 730, 100000],
 }
 
 
@@ -76,7 +80,8 @@ def sample_params(rng):
 
 
 def make_model(params):
-    return lgb.LGBMRegressor(objective="regression", random_state=MODEL_RANDOM_STATE, verbosity=-1, **params)
+    lgb_params = {k: v for k, v in params.items() if k != "half_life_days"}
+    return lgb.LGBMRegressor(objective="regression", random_state=MODEL_RANDOM_STATE, verbosity=-1, **lgb_params)
 
 
 def score_params(params, position_rows, folds):
@@ -90,7 +95,8 @@ def score_params(params, position_rows, folds):
         if len(train) < 30 or len(test) < 5:
             continue
         model = make_model(params)
-        weights = compute_sample_weights(train["date"], as_of=pd.Timestamp(train["date"].max(), tz="UTC"))
+        half_life = params.get("half_life_days", DEFAULT_MODEL_PARAMS["half_life_days"])
+        weights = compute_sample_weights(train["date"], half_life_days=half_life, as_of=pd.Timestamp(train["date"].max(), tz="UTC"))
         model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
         predictions = np.clip(model.predict(test[POSITION_FEATURES]), 0, 15)
         fold_maes.append(float(np.mean(np.abs(predictions - test["total_points"].to_numpy()))))
@@ -164,8 +170,7 @@ def main():
         improved = best_mae < required_mae
         print(f"{position}: current MAE {current_mae:.3f} -> best found MAE {best_mae:.3f} "
               f"({'IMPROVED' if improved else f'no improvement past the {MIN_IMPROVEMENT_PCT}% threshold, kept current'})")
-        if improved:
-            print(f"    winning params: {best_params}")
+        print(f"    best candidate found (adopted or not): {best_params}")
 
         final_params = best_params if improved else current_params
         applied_params[position] = final_params
@@ -174,6 +179,7 @@ def main():
             "best_mae": round(best_mae, 4),
             "improved": improved,
             "params": final_params,
+            "best_candidate_params": best_params,
         }
 
     with open(OUTPUT_FILE, "w") as f:

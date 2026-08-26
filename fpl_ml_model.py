@@ -90,29 +90,46 @@ DEFAULT_MODEL_PARAMS = {
     "max_depth": 5,
     "min_child_samples": 30,
     "reg_lambda": 2.0,
+    "half_life_days": RECENCY_HALF_LIFE_DAYS,
 }
+
+# LGBMRegressor doesn't accept half_life_days -- it's ours, consumed by compute_sample_weights,
+# not the model itself. Every params dict (defaults, per-position overrides, and search
+# candidates) carries it alongside the real LightGBM hyperparameters; strip it out right before
+# constructing the model.
+NON_LGB_PARAM_KEYS = ("half_life_days",)
 
 # Per-position hyperparameters found by tune_model.py's random search (scored across two
 # time-based holdout folds, so these beat the defaults on more than one window, not just one
 # lucky split). MID's default settings already won, so it's left out and falls back to
 # DEFAULT_MODEL_PARAMS. Re-run tune_model.py periodically and update this as the season evolves.
 POSITION_MODEL_PARAMS = {
-    "GK": {"n_estimators": 150, "learning_rate": 0.06, "num_leaves": 7, "max_depth": 6, "min_child_samples": 80, "reg_lambda": 4.0},
-    "DEF": {"n_estimators": 100, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 5, "min_child_samples": 10, "reg_lambda": 0.5},
-    "MID": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 15, "max_depth": 5, "min_child_samples": 30, "reg_lambda": 2.0},
-    "FWD": {"n_estimators": 200, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 6, "min_child_samples": 10, "reg_lambda": 8.0},
+    "GK": {"n_estimators": 150, "learning_rate": 0.06, "num_leaves": 7, "max_depth": 6, "min_child_samples": 80, "reg_lambda": 4.0, "half_life_days": RECENCY_HALF_LIFE_DAYS},
+    "DEF": {"n_estimators": 100, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 5, "min_child_samples": 10, "reg_lambda": 0.5, "half_life_days": RECENCY_HALF_LIFE_DAYS},
+    "MID": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 15, "max_depth": 5, "min_child_samples": 30, "reg_lambda": 2.0, "half_life_days": RECENCY_HALF_LIFE_DAYS},
+    "FWD": {"n_estimators": 200, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 6, "min_child_samples": 10, "reg_lambda": 8.0, "half_life_days": RECENCY_HALF_LIFE_DAYS},
 }
 
 
+def get_position_params(position):
+    return POSITION_MODEL_PARAMS.get(position, DEFAULT_MODEL_PARAMS)
+
+
+def get_half_life_days(position):
+    return get_position_params(position).get("half_life_days", RECENCY_HALF_LIFE_DAYS)
+
+
 def make_model(position):
-    params = POSITION_MODEL_PARAMS.get(position, DEFAULT_MODEL_PARAMS)
+    params = {k: v for k, v in get_position_params(position).items() if k not in NON_LGB_PARAM_KEYS}
     return lgb.LGBMRegressor(objective="regression", random_state=42, verbosity=-1, **params)
 
 
 def compute_sample_weights(dates, half_life_days=RECENCY_HALF_LIFE_DAYS, as_of=None):
     """Recency weighting: a row from last season should count for less than one from this
     week, since team/player form drifts over time. Exponential decay by calendar days, not
-    gameweeks, so it blends current-season and archive rows on one consistent scale."""
+    gameweeks, so it blends current-season and archive rows on one consistent scale. A very
+    large half_life_days effectively switches this off (weights ~1.0 for any realistic date) --
+    tune_model.py searches that as a candidate, not just shorter decay rates."""
     as_of = as_of or pd.Timestamp.now(tz="UTC")
     parsed = pd.to_datetime(dates, utc=True, errors="coerce")
     days_ago = (as_of - parsed).dt.days.clip(lower=0)
@@ -628,14 +645,13 @@ def main():
         raise RuntimeError("Not enough historical rows to train the model.")
     print(f"Training rows: {len(training)} ({(training['source'] == 'fpl_live_current_season').sum()} current season, {(training['source'] != 'fpl_live_current_season').sum()} from {PRIOR_SEASON_ARCHIVE} archive)")
 
-    training["sample_weight"] = compute_sample_weights(training["date"])
-
     models = {}
     importance_tables = []
     for position in POSITION_MAP.values():
         subset = training[training["position"] == position]
+        weights = compute_sample_weights(subset["date"], half_life_days=get_half_life_days(position))
         model = make_model(position)
-        model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=subset["sample_weight"])
+        model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
         models[position] = model
 
         position_importance = pd.DataFrame(
