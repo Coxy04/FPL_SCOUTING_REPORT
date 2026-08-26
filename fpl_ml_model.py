@@ -170,8 +170,8 @@ def get_understat_team_matches(understat, season):
         date = match["datetime"][:10]
         home, away = match["h"]["title"], match["a"]["title"]
         xg_h, xg_a = float(match["xG"]["h"]), float(match["xG"]["a"])
-        rows.append({"team": home, "date": date, "xg_for": xg_h, "xg_against": xg_a})
-        rows.append({"team": away, "date": date, "xg_for": xg_a, "xg_against": xg_h})
+        rows.append({"team": home, "date": date, "xg_for": xg_h, "xg_against": xg_a, "was_home": True})
+        rows.append({"team": away, "date": date, "xg_for": xg_a, "xg_against": xg_h, "was_home": False})
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
@@ -179,8 +179,12 @@ def get_understat_team_matches(understat, season):
 
 
 def add_prematch_team_form(frame):
+    # Grouped by (team, was_home), not just team: a team's home form and away form are rolled
+    # separately, so "how strong is this team" reflects the venue they're actually playing at in
+    # the fixture being featured, not a blend that dilutes a fortress-at-home team's home number
+    # with their away results (or vice versa).
     frame = frame.copy()
-    grouped = frame.groupby("team")
+    grouped = frame.groupby(["team", "was_home"])
     frame["team_xg_for_form"] = grouped["xg_for"].transform(
         lambda s: s.shift(1).rolling(TEAM_FORM_WINDOW, min_periods=1).mean()
     )
@@ -191,6 +195,11 @@ def add_prematch_team_form(frame):
 
 
 def build_team_form_lookup(frame):
+    # Keyed by (team, date), same as before -- but since each row is already tagged with the
+    # venue that team actually played that match, the stored form value is automatically the
+    # correct home-or-away-specific one for both the player's own team AND their opponent's row
+    # on that same date (who were, by definition, at the opposite venue). No was_home lookup key
+    # needed here; the historical record already encodes it.
     lookup = {}
     for row in frame.itertuples():
         lookup[(row.team, row.date)] = (row.team_xg_for_form, row.team_xg_against_form)
@@ -198,10 +207,24 @@ def build_team_form_lookup(frame):
 
 
 def build_current_team_form(frame):
+    # Unlike build_team_form_lookup, this isn't tied to a specific historical match record, so
+    # the venue has to be part of the key explicitly: "current form" means something different
+    # depending on whether the upcoming fixture is home or away.
     current = {}
+    for (team, was_home), group in frame.groupby(["team", "was_home"]):
+        tail = group.sort_values("date").tail(TEAM_FORM_WINDOW)
+        current[(team, was_home)] = (tail["xg_for"].mean(), tail["xg_against"].mean())
+
+    # Early in a season (or for a team that just hasn't played one venue yet), the split above
+    # can be empty on one side -- falling back to 0 there would misread as "this team never
+    # scores" rather than "no data yet". Fall back to the team's overall blended form instead,
+    # which is less precise but not misleading.
     for team, group in frame.groupby("team"):
         tail = group.sort_values("date").tail(TEAM_FORM_WINDOW)
-        current[team] = (tail["xg_for"].mean(), tail["xg_against"].mean())
+        overall = (tail["xg_for"].mean(), tail["xg_against"].mean())
+        for was_home in (True, False):
+            current.setdefault((team, was_home), overall)
+
     return current
 
 
@@ -529,7 +552,6 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
         actual_goals_per90 = (season_goals / season_minutes * 90) if season_minutes > 0 else 0
 
         own_understat_team = UNDERSTAT_TEAM_MAP.get(player["team_name"])
-        own_form = current_team_form.get(own_understat_team, (0, 0))
         season_points = player.get("total_points", 0)
 
         # FPL leaves chance_of_playing_next_round null only when a player is fully fit; injured/
@@ -549,7 +571,10 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             pair = difficulty_lookup[fixture["id"]]
             opponent_id = fixture["team_a"] if was_home else fixture["team_h"]
             opp_understat_team = UNDERSTAT_TEAM_MAP.get(teams.get(opponent_id, ""))
-            opp_form = current_team_form.get(opp_understat_team, (0, 0))
+            # Own form uses this fixture's actual venue; the opponent is necessarily at the
+            # opposite venue in this same match, so their relevant form is the other side's.
+            own_form = current_team_form.get((own_understat_team, was_home), (0, 0))
+            opp_form = current_team_form.get((opp_understat_team, not was_home), (0, 0))
             row = {
                 "id": player["id"],
                 "web_name": player["web_name"],
