@@ -11,7 +11,7 @@ PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 GEMS_FILE = Path("fpl_ml_hidden_gems.csv")
 FEATURE_IMPORTANCE_FILE = Path("fpl_ml_feature_importance.csv")
 META_FILE = Path("fpl_ml_meta.json")
-OUTPUT_FILE = Path("dashboard.html")
+OUTPUT_FILE = Path("docs/index.html")
 
 PLAYER_COLUMNS = [
     "id", "web_name", "team_name", "position", "now_cost", "event",
@@ -58,6 +58,7 @@ def build():
         .replace("__FEATURES_JSON__", safe_json(features))
         .replace("__META_JSON__", safe_json(meta))
     )
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html, encoding="utf-8")
     print(f"Built {OUTPUT_FILE} ({len(players)} players, {len(features)} features)")
 
