@@ -97,7 +97,7 @@ DEFAULT_MODEL_PARAMS = {
 # lucky split). MID's default settings already won, so it's left out and falls back to
 # DEFAULT_MODEL_PARAMS. Re-run tune_model.py periodically and update this as the season evolves.
 POSITION_MODEL_PARAMS = {
-    "GK": {"n_estimators": 200, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 7, "min_child_samples": 10, "reg_lambda": 4.0},
+    "GK": {"n_estimators": 150, "learning_rate": 0.06, "num_leaves": 7, "max_depth": 6, "min_child_samples": 80, "reg_lambda": 4.0},
     "DEF": {"n_estimators": 100, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 5, "min_child_samples": 10, "reg_lambda": 0.5},
     "MID": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 15, "max_depth": 5, "min_child_samples": 30, "reg_lambda": 2.0},
     "FWD": {"n_estimators": 200, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 6, "min_child_samples": 10, "reg_lambda": 8.0},
