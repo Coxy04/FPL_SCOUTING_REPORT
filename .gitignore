@@ -1,0 +1,10 @@
+fpl_env/
+__pycache__/
+*.pyc
+fpl_ml_predictions.csv
+fpl_ml_hidden_gems.csv
+fpl_ml_feature_importance.csv
+fpl_ml_meta.json
+dashboard.html
+.vscode/
+.claude/

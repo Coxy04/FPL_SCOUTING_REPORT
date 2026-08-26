@@ -1,0 +1,498 @@
+<title>Scouting Report</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f4f3ee;
+    --surface: #fbfaf7;
+    --surface-raised: #ffffff;
+    --ink-primary: #14170f;
+    --ink-secondary: #565b4f;
+    --ink-muted: #8b9080;
+    --border: rgba(20,23,15,0.10);
+    --border-strong: rgba(20,23,15,0.16);
+    --accent: #1f6b4a;
+    --accent-ink: #ffffff;
+    --accent-soft: #e4efe7;
+    --gold: #96650f;
+    --gold-soft: #f7ecd8;
+    --seq-100: #cde2fb; --seq-250: #86b6ef; --seq-400: #3987e5; --seq-450: #2a78d6;
+    --seq-500: #256abf; --seq-550: #1c5cab; --seq-600: #184f95; --seq-650: #104281; --seq-700: #0d366b;
+    --gridline: #e1e0d9;
+    --baseline: #c3c2b7;
+    --good: #0ca30c;
+    --pos-gk: #2a78d6; --pos-def: #1baf7a; --pos-mid: #4a3aa7; --pos-fwd: #e34948;
+    --shadow: 0 1px 2px rgba(20,23,15,0.06), 0 8px 24px -12px rgba(20,23,15,0.16);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0c0e0a;
+      --surface: #14170f;
+      --surface-raised: #191d13;
+      --ink-primary: #f6f7f2;
+      --ink-secondary: #b9bfae;
+      --ink-muted: #83887a;
+      --border: rgba(255,255,255,0.10);
+      --border-strong: rgba(255,255,255,0.16);
+      --accent: #46b07e;
+      --accent-ink: #0c0e0a;
+      --accent-soft: rgba(70,176,126,0.14);
+      --gold: #e0ac4f;
+      --gold-soft: rgba(224,172,79,0.14);
+      --seq-100: #cde2fb; --seq-250: #86b6ef; --seq-400: #3987e5; --seq-450: #2a78d6;
+      --seq-500: #3987e5; --seq-550: #5598e7; --seq-600: #6da7ec; --seq-650: #86b6ef; --seq-700: #9ec5f4;
+      --gridline: #2c2c2a;
+      --baseline: #383835;
+      --good: #0ca30c;
+      --pos-gk: #3987e5; --pos-def: #199e70; --pos-mid: #9085e9; --pos-fwd: #e66767;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0c0e0a;
+    --surface: #14170f;
+    --surface-raised: #191d13;
+    --ink-primary: #f6f7f2;
+    --ink-secondary: #b9bfae;
+    --ink-muted: #83887a;
+    --border: rgba(255,255,255,0.10);
+    --border-strong: rgba(255,255,255,0.16);
+    --accent: #46b07e;
+    --accent-ink: #0c0e0a;
+    --accent-soft: rgba(70,176,126,0.14);
+    --gold: #e0ac4f;
+    --gold-soft: rgba(224,172,79,0.14);
+    --seq-100: #cde2fb; --seq-250: #86b6ef; --seq-400: #3987e5; --seq-450: #2a78d6;
+    --seq-500: #3987e5; --seq-550: #5598e7; --seq-600: #6da7ec; --seq-650: #86b6ef; --seq-700: #9ec5f4;
+    --gridline: #2c2c2a;
+    --baseline: #383835;
+    --good: #0ca30c;
+    --pos-gk: #3987e5; --pos-def: #199e70; --pos-mid: #9085e9; --pos-fwd: #e66767;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--ink-primary);
+    font-family: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3 { font-family: "Big Shoulders Display", system-ui, sans-serif; font-weight: 700; text-wrap: balance; margin: 0; }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+  .shell { max-width: 1180px; margin: 0 auto; padding: 0 20px 64px; }
+
+  /* header */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--page) 92%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-inner {
+    max-width: 1180px; margin: 0 auto; padding: 16px 20px;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; }
+  .brand h1 { font-size: 26px; letter-spacing: 0.2px; }
+  .brand .tagline { color: var(--ink-muted); font-size: 13px; }
+  .meta-line { color: var(--ink-secondary); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .meta-line strong { color: var(--ink-primary); font-weight: 600; }
+
+  /* stat tiles */
+  .tiles {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+    margin: 28px 0 40px;
+  }
+  @media (max-width: 720px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
+  .tile {
+    background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px; box-shadow: var(--shadow);
+  }
+  .tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); font-weight: 600; }
+  .tile .value { font-family: "Big Shoulders Display", sans-serif; font-size: 32px; font-weight: 700; margin-top: 4px; line-height: 1; }
+  .tile .sub { font-size: 12.5px; color: var(--ink-secondary); margin-top: 6px; }
+  .tile.gold { background: var(--gold-soft); border-color: color-mix(in srgb, var(--gold) 30%, var(--border)); }
+  .tile.gold .value { color: var(--gold); }
+
+  section { margin: 48px 0; }
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
+  .section-head h2 { font-size: 24px; }
+  .section-intro { color: var(--ink-secondary); font-size: 14px; max-width: 62ch; margin: 6px 0 20px; }
+
+  /* chips / filters */
+  .chip-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .chip {
+    font-family: "Public Sans", sans-serif; font-size: 13px; font-weight: 600;
+    padding: 6px 13px; border-radius: 999px; border: 1px solid var(--border-strong);
+    background: var(--surface-raised); color: var(--ink-secondary); cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--ink-primary); }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+
+  /* chart + table two-col */
+  .gems-layout { display: grid; grid-template-columns: 1.1fr 1fr; gap: 24px; align-items: start; }
+  @media (max-width: 900px) { .gems-layout { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--surface-raised); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; box-shadow: var(--shadow);
+  }
+  .card h3 { font-size: 15px; font-weight: 600; font-family: "Public Sans", sans-serif; color: var(--ink-secondary); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; font-size: 12px; }
+
+  #scatter-tooltip {
+    position: fixed; pointer-events: none; z-index: 50; display: none;
+    background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 8px;
+    padding: 10px 12px; box-shadow: var(--shadow); font-size: 12.5px; max-width: 220px;
+  }
+  #scatter-tooltip .t-name { font-weight: 700; font-family: "Big Shoulders Display", sans-serif; font-size: 15px; }
+  #scatter-tooltip .t-row { display: flex; justify-content: space-between; gap: 10px; color: var(--ink-secondary); margin-top: 2px; }
+  #scatter-tooltip .t-row b { color: var(--ink-primary); }
+
+  .axis-label { fill: var(--ink-muted); font-size: 10px; font-family: "Public Sans", sans-serif; }
+  .grid-line { stroke: var(--gridline); stroke-width: 1; }
+  .baseline-line { stroke: var(--baseline); stroke-width: 1; }
+  .scatter-dot { stroke: var(--surface-raised); stroke-width: 1.2; cursor: pointer; transition: r 0.1s; }
+  .scatter-dot:hover { stroke: var(--ink-primary); }
+
+  /* tables */
+  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 560px; }
+  thead th {
+    position: sticky; top: 0; background: var(--surface); text-align: left;
+    padding: 10px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink-muted); font-weight: 600; border-bottom: 1px solid var(--border-strong);
+    cursor: pointer; white-space: nowrap; user-select: none;
+  }
+  thead th.sorted { color: var(--accent); }
+  thead th .arrow { font-size: 9px; margin-left: 3px; opacity: 0.7; }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  tbody tr:hover { background: var(--surface); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+
+  .pos-pill {
+    display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 7px; border-radius: 5px;
+    color: #fff; letter-spacing: 0.02em;
+  }
+  .pos-GK { background: var(--pos-gk); }
+  .pos-DEF { background: var(--pos-def); }
+  .pos-MID { background: var(--pos-mid); }
+  .pos-FWD { background: var(--pos-fwd); }
+
+  .gap-positive { color: var(--good); font-weight: 600; }
+
+  .table-toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
+  .search-input, .select-input {
+    font-family: "Public Sans", sans-serif; font-size: 13.5px; padding: 8px 12px;
+    border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-raised); color: var(--ink-primary);
+  }
+  .search-input { flex: 1 1 220px; min-width: 160px; }
+  .search-input:focus, .select-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .table-body-scroll { max-height: 560px; overflow-y: auto; }
+  .row-count { color: var(--ink-muted); font-size: 12.5px; margin-left: auto; }
+
+  /* feature importance */
+  .fi-row { display: grid; grid-template-columns: 150px 1fr 46px; align-items: center; gap: 10px; margin: 7px 0; font-size: 13px; }
+  .fi-label { color: var(--ink-secondary); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fi-bar-track { background: var(--gridline); border-radius: 4px; height: 10px; overflow: hidden; }
+  .fi-bar-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+  .fi-value { font-family: "IBM Plex Mono", monospace; color: var(--ink-muted); font-size: 12px; }
+
+  footer { border-top: 1px solid var(--border); padding-top: 22px; color: var(--ink-muted); font-size: 12.5px; }
+  footer p { margin: 4px 0; max-width: 70ch; }
+  footer a { color: var(--ink-secondary); }
+
+  a { color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <h1>Scouting Report</h1>
+      <span class="tagline">Underlying-quality picks, before the price catches up</span>
+    </div>
+    <div class="meta-line" id="meta-line"></div>
+  </div>
+</div>
+
+<div class="shell">
+
+  <div class="tiles" id="tiles"></div>
+
+  <section id="gems-section">
+    <div class="section-head">
+      <h2>Hidden Gems</h2>
+    </div>
+    <p class="section-intro">
+      Players the model rates well above what they've actually returned in points recently, based on
+      underlying process — team &amp; opponent xG form, expected goals/assists, minutes trend — filtered to
+      under 10% ownership. The gap is a "should be delivering soon" signal, not a guarantee.
+    </p>
+    <div class="chip-row" id="position-filter"></div>
+    <div class="gems-layout">
+      <div class="card">
+        <h3>Predicted points vs. ownership</h3>
+        <div id="scatter-wrap"></div>
+      </div>
+      <div class="card">
+        <h3>Top gems this gameweek</h3>
+        <div class="table-scroll">
+          <table id="gems-table">
+            <thead><tr>
+              <th>Player</th><th>Pos</th><th class="num">Owned</th><th class="num">Pred.</th><th class="num">Gap</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="predictions-section">
+    <div class="section-head">
+      <h2>Full Predictions</h2>
+    </div>
+    <p class="section-intro">Every player with a scheduled fixture next gameweek, ranked by predicted points. Search, filter, and sort to build your own shortlist.</p>
+    <div class="table-toolbar">
+      <input class="search-input" id="search" type="text" placeholder="Search player or team…" />
+      <select class="select-input" id="filter-position">
+        <option value="">All positions</option>
+        <option value="GK">GK</option>
+        <option value="DEF">DEF</option>
+        <option value="MID">MID</option>
+        <option value="FWD">FWD</option>
+      </select>
+      <span class="row-count" id="row-count"></span>
+    </div>
+    <div class="table-scroll table-body-scroll">
+      <table id="full-table">
+        <thead><tr>
+          <th data-key="web_name">Player</th>
+          <th data-key="team_name">Team</th>
+          <th data-key="position">Pos</th>
+          <th class="num" data-key="now_cost">Cost</th>
+          <th class="num" data-key="ownership_pct">Owned %</th>
+          <th class="num" data-key="predicted_points">Pred. Pts</th>
+          <th class="num" data-key="points_per_million">Pts/£m</th>
+          <th class="num" data-key="underperformance_gap">Gap</th>
+          <th class="num" data-key="difficulty">FDR</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="model-section">
+    <div class="section-head"><h2>Model Insights</h2></div>
+    <p class="section-intro">What the model actually weighs when scoring a player, by share of prediction-error reduction.</p>
+    <div class="card" id="fi-card"></div>
+  </section>
+
+  <footer>
+    <p><strong>Sources:</strong> Official FPL API (live), Understat (team &amp; player xG form), and the <a href="https://github.com/vaastav/Fantasy-Premier-League" target="_blank" rel="noopener">vaastav/Fantasy-Premier-League</a> archive for prior-season training data.</p>
+    <p>Model: LightGBM gradient-boosted trees, trained on lagged pre-match rolling form (not same-match actuals, to avoid leaking the label into its own features).</p>
+    <p id="footer-generated"></p>
+  </footer>
+
+</div>
+
+<div id="scatter-tooltip"></div>
+
+<script>
+const PLAYERS = __PLAYERS_JSON__;
+const FEATURES = __FEATURES_JSON__;
+const META = __META_JSON__;
+
+function fmt(n, d = 1) { return (typeof n === "number" && !isNaN(n)) ? n.toFixed(d) : "–"; }
+function fmtCost(c) { return "£" + (c / 10).toFixed(1) + "m"; }
+function esc(s) { return String(s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
+
+// ---------- header meta ----------
+(function renderMeta() {
+  const genDate = new Date(META.generated_at);
+  document.getElementById("meta-line").innerHTML =
+    `<span>Gameweek <strong>${META.next_event ?? "–"}</strong></span>` +
+    `<span>Updated <strong>${genDate.toLocaleDateString(undefined, {month: "short", day: "numeric"})} ${genDate.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"})}</strong></span>`;
+  document.getElementById("footer-generated").textContent =
+    `Data generated ${genDate.toLocaleString(undefined, {dateStyle: "long", timeStyle: "short"})}.`;
+})();
+
+// ---------- stat tiles ----------
+(function renderTiles() {
+  const topScorer = [...PLAYERS].sort((a, b) => b.predicted_points - a.predicted_points)[0];
+  const tiles = [
+    { label: "Next Gameweek", value: "GW " + (META.next_event ?? "–"), sub: `${META.predicted_players} players modeled` },
+    { label: "Hidden Gems Found", value: META.gems_found, sub: "under 10% owned", gold: true },
+    { label: "Top Predicted Score", value: fmt(topScorer.predicted_points), sub: `${topScorer.web_name} (${topScorer.team_name})` },
+    { label: "Training Rows", value: META.training_rows_total.toLocaleString(), sub: `${META.training_rows_current_season} this season + ${META.training_rows_archive.toLocaleString()} archive` },
+  ];
+  document.getElementById("tiles").innerHTML = tiles.map(t => `
+    <div class="tile${t.gold ? " gold" : ""}">
+      <div class="label">${t.label}</div>
+      <div class="value mono">${t.value}</div>
+      <div class="sub">${t.sub}</div>
+    </div>
+  `).join("");
+})();
+
+// ---------- position filter (shared by scatter) ----------
+let activePosition = "";
+const POSITIONS = ["GK", "DEF", "MID", "FWD"];
+function renderPositionChips() {
+  const el = document.getElementById("position-filter");
+  el.innerHTML = ["All", ...POSITIONS].map(p => {
+    const val = p === "All" ? "" : p;
+    return `<button class="chip${activePosition === val ? " active" : ""}" data-pos="${val}">${p}</button>`;
+  }).join("");
+  el.querySelectorAll(".chip").forEach(btn => {
+    btn.addEventListener("click", () => { activePosition = btn.dataset.pos; renderPositionChips(); renderScatter(); });
+  });
+}
+
+// ---------- scatter chart ----------
+function renderScatter() {
+  const data = PLAYERS.filter(p => p.predicted_points > 0 && (!activePosition || p.position === activePosition));
+  const W = 520, H = 360, M = { t: 14, r: 14, b: 34, l: 40 };
+  const plotW = W - M.l - M.r, plotH = H - M.t - M.b;
+
+  const xMax = Math.max(20, Math.min(100, Math.ceil(Math.max(...data.map(p => p.ownership_pct), 5) * 1.15)));
+  const yMax = Math.ceil(Math.max(...data.map(p => p.predicted_points), 1) * 1.1);
+  const gapMax = Math.max(1, Math.max(...data.map(p => p.underperformance_gap)));
+  const costs = data.map(p => p.now_cost);
+  const costMin = Math.min(...costs, 40), costMax = Math.max(...costs, 150);
+
+  const x = v => M.l + (v / xMax) * plotW;
+  const y = v => M.t + plotH - (v / yMax) * plotH;
+  const radius = c => 4 + ((c - costMin) / Math.max(1, costMax - costMin)) * 8;
+  const seqSteps = ["--seq-250", "--seq-400", "--seq-450", "--seq-500", "--seq-550", "--seq-600", "--seq-650", "--seq-700"];
+  const color = gap => `var(${seqSteps[Math.min(seqSteps.length - 1, Math.floor((Math.max(0, gap) / gapMax) * seqSteps.length))]})`;
+
+  const xTicks = [0, xMax / 2, xMax];
+  const yTicks = [0, yMax / 2, yMax];
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Predicted points versus ownership scatter plot" style="width:100%;height:auto;">`;
+  yTicks.forEach(t => {
+    svg += `<line class="grid-line" x1="${M.l}" x2="${W - M.r}" y1="${y(t)}" y2="${y(t)}" />`;
+    svg += `<text class="axis-label" x="${M.l - 6}" y="${y(t) + 3}" text-anchor="end">${t.toFixed(0)}</text>`;
+  });
+  xTicks.forEach(t => {
+    svg += `<text class="axis-label" x="${x(t)}" y="${H - M.b + 16}" text-anchor="middle">${t.toFixed(0)}%</text>`;
+  });
+  svg += `<line class="baseline-line" x1="${M.l}" x2="${W - M.r}" y1="${H - M.b}" y2="${H - M.b}" />`;
+  svg += `<text class="axis-label" x="${M.l}" y="${H - 4}">Ownership</text>`;
+  svg += `<text class="axis-label" transform="translate(12 ${M.t + 8})">Pred. pts</text>`;
+
+  data.forEach(p => {
+    svg += `<circle class="scatter-dot" cx="${x(p.ownership_pct).toFixed(1)}" cy="${y(p.predicted_points).toFixed(1)}" r="${radius(p.now_cost).toFixed(1)}" fill="${color(p.underperformance_gap)}" data-id="${p.id}" />`;
+  });
+  svg += `</svg>`;
+
+  const wrap = document.getElementById("scatter-wrap");
+  wrap.innerHTML = svg;
+
+  const tooltip = document.getElementById("scatter-tooltip");
+  wrap.querySelectorAll(".scatter-dot").forEach(dot => {
+    const p = data.find(d => String(d.id) === dot.dataset.id);
+    dot.addEventListener("mousemove", e => {
+      tooltip.style.display = "block";
+      tooltip.style.left = (e.clientX + 14) + "px";
+      tooltip.style.top = (e.clientY + 14) + "px";
+      tooltip.innerHTML = `
+        <div class="t-name">${esc(p.web_name)} <span class="pos-pill pos-${p.position}">${p.position}</span></div>
+        <div class="t-row"><span>${esc(p.team_name)}</span><b>${fmtCost(p.now_cost)}</b></div>
+        <div class="t-row"><span>Predicted</span><b>${fmt(p.predicted_points)}</b></div>
+        <div class="t-row"><span>Recent avg</span><b>${fmt(p.recent_points_avg)}</b></div>
+        <div class="t-row"><span>Owned</span><b>${fmt(p.ownership_pct)}%</b></div>
+      `;
+    });
+    dot.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+  });
+}
+
+// ---------- gems table ----------
+(function renderGemsTable() {
+  const gems = PLAYERS.filter(p => p.is_gem).sort((a, b) => b.underperformance_gap - a.underperformance_gap).slice(0, 20);
+  const tbody = document.querySelector("#gems-table tbody");
+  tbody.innerHTML = gems.map(p => `
+    <tr>
+      <td>${esc(p.web_name)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
+      <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
+      <td class="num">${fmt(p.ownership_pct)}%</td>
+      <td class="num">${fmt(p.predicted_points)}</td>
+      <td class="num gap-positive">+${fmt(p.underperformance_gap)}</td>
+    </tr>
+  `).join("");
+})();
+
+// ---------- full predictions table ----------
+let sortKey = "predicted_points", sortDir = -1, searchTerm = "", filterPos = "";
+function renderFullTable() {
+  let rows = PLAYERS.filter(p => p.event === META.next_event || META.next_event === null);
+  if (filterPos) rows = rows.filter(p => p.position === filterPos);
+  if (searchTerm) {
+    const t = searchTerm.toLowerCase();
+    rows = rows.filter(p => p.web_name.toLowerCase().includes(t) || p.team_name.toLowerCase().includes(t));
+  }
+  rows = rows.slice().sort((a, b) => (a[sortKey] - b[sortKey]) * sortDir);
+
+  document.getElementById("row-count").textContent = `${rows.length} players`;
+  document.querySelectorAll("#full-table th[data-key]").forEach(th => {
+    th.classList.toggle("sorted", th.dataset.key === sortKey);
+    th.querySelector(".arrow")?.remove();
+    if (th.dataset.key === sortKey) th.insertAdjacentHTML("beforeend", `<span class="arrow">${sortDir === 1 ? "▲" : "▼"}</span>`);
+  });
+
+  const tbody = document.querySelector("#full-table tbody");
+  tbody.innerHTML = rows.map(p => `
+    <tr>
+      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}</td>
+      <td>${esc(p.team_name)}</td>
+      <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
+      <td class="num">${fmtCost(p.now_cost)}</td>
+      <td class="num">${fmt(p.ownership_pct)}%</td>
+      <td class="num">${fmt(p.predicted_points)}</td>
+      <td class="num">${fmt(p.points_per_million)}</td>
+      <td class="num${p.underperformance_gap > 0 ? " gap-positive" : ""}">${p.underperformance_gap > 0 ? "+" : ""}${fmt(p.underperformance_gap)}</td>
+      <td class="num">${p.difficulty}</td>
+    </tr>
+  `).join("");
+}
+document.querySelectorAll("#full-table th[data-key]").forEach(th => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.key;
+    if (sortKey === key) sortDir *= -1; else { sortKey = key; sortDir = -1; }
+    renderFullTable();
+  });
+});
+document.getElementById("search").addEventListener("input", e => { searchTerm = e.target.value; renderFullTable(); });
+document.getElementById("filter-position").addEventListener("change", e => { filterPos = e.target.value; renderFullTable(); });
+
+// ---------- feature importance ----------
+(function renderFeatureImportance() {
+  const max = Math.max(...FEATURES.map(f => f.importance_gain_pct));
+  document.getElementById("fi-card").innerHTML = FEATURES.slice(0, 12).map(f => `
+    <div class="fi-row">
+      <div class="fi-label">${esc(f.feature)}</div>
+      <div class="fi-bar-track"><div class="fi-bar-fill" style="width:${(f.importance_gain_pct / max * 100).toFixed(1)}%"></div></div>
+      <div class="fi-value">${fmt(f.importance_gain_pct)}%</div>
+    </div>
+  `).join("");
+})();
+
+renderPositionChips();
+renderScatter();
+renderFullTable();
+</script>
