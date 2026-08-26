@@ -326,6 +326,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "position": row.position,
                 "total_points": row.total_points,
                 "source": f"fpl_archive_{PRIOR_SEASON_ARCHIVE}",
+                "gw": row.GW,
             }
         )
     return pd.DataFrame(rows)
@@ -475,6 +476,12 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
         own_form = current_team_form.get(own_understat_team, (0, 0))
         season_points = player.get("total_points", 0)
 
+        # FPL leaves chance_of_playing_next_round null only when a player is fully fit; injured/
+        # suspended/unavailable/doubtful players all get a real 0-100 value, so this discounts
+        # predictions for anyone with a fitness doubt instead of blindly trusting their form stats.
+        chance = player.get("chance_of_playing_next_round")
+        availability_multiplier = 1.0 if chance is None else chance / 100.0
+
         team_fixtures = [
             f for f in fixtures
             if not f["finished"] and player["team"] in (f["team_h"], f["team_a"])
@@ -514,6 +521,9 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
                 "ownership_pct": float(player.get("selected_by_percent", 0) or 0),
                 "goals_vs_npxg90": actual_goals_per90 - player_stats.get("npxg90", 0),
                 "season_points": season_points,
+                "status": player.get("status", "a"),
+                "chance_of_playing_next_round": chance,
+                "availability_multiplier": availability_multiplier,
             }
             rows.append(row)
         time.sleep(0.05)
@@ -627,7 +637,7 @@ def main():
         mask = (upcoming["position"] == position).to_numpy()
         if mask.any():
             upcoming.loc[mask, "predicted_points"] = model.predict(featured_upcoming.loc[mask, POSITION_FEATURES])
-    upcoming["predicted_points"] = upcoming["predicted_points"].clip(0, 15)
+    upcoming["predicted_points"] = (upcoming["predicted_points"] * upcoming["availability_multiplier"]).clip(0, 15)
     upcoming["points_per_million"] = upcoming["predicted_points"] / (upcoming["now_cost"] / 10)
     upcoming["predicted_points_5gw"] = upcoming.groupby("id")["predicted_points"].transform("sum")
 

@@ -22,6 +22,7 @@ PLAYER_COLUMNS = [
     "expected_goals_conceded", "difficulty", "team_xg_for_form",
     "team_xg_against_form", "opp_xg_for_form", "opp_xg_against_form",
     "npxg90", "xa90", "xgchain90",
+    "status", "chance_of_playing_next_round",
 ]
 
 

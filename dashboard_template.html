@@ -31,6 +31,7 @@
     --gridline: #e1e0d9;
     --baseline: #c3c2b7;
     --good: #0ca30c;
+    --critical: #d03b3b;
     --pos-gk: #2a78d6; --pos-def: #1baf7a; --pos-mid: #4a3aa7; --pos-fwd: #e34948;
     --shadow: 0 1px 2px rgba(20,23,15,0.06), 0 8px 24px -12px rgba(20,23,15,0.16);
   }
@@ -55,6 +56,7 @@
       --gridline: #2c2c2a;
       --baseline: #383835;
       --good: #0ca30c;
+    --critical: #d03b3b;
       --pos-gk: #3987e5; --pos-def: #199e70; --pos-mid: #9085e9; --pos-fwd: #e66767;
       --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
     }
@@ -79,6 +81,7 @@
     --gridline: #2c2c2a;
     --baseline: #383835;
     --good: #0ca30c;
+    --critical: #d03b3b;
     --pos-gk: #3987e5; --pos-def: #199e70; --pos-mid: #9085e9; --pos-fwd: #e66767;
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
   }
@@ -331,6 +334,16 @@ function fmt(n, d = 1) { return (typeof n === "number" && !isNaN(n)) ? n.toFixed
 function fmtCost(c) { return "£" + (c / 10).toFixed(1) + "m"; }
 function esc(s) { return String(s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
 
+const STATUS_LABELS = { d: "Doubtful", i: "Injured", s: "Suspended", u: "Unavailable", n: "Not eligible" };
+function statusBadge(p) {
+  if (!p.status || p.status === "a") return "";
+  const label = STATUS_LABELS[p.status] || "Doubtful";
+  const pct = p.chance_of_playing_next_round;
+  const title = pct !== null && pct !== undefined ? `${label} — ${pct}% chance of playing` : label;
+  const color = p.status === "d" ? "var(--gold)" : "var(--critical)";
+  return ` <span title="${esc(title)}" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-left:3px;vertical-align:middle;"></span>`;
+}
+
 // ---------- header meta ----------
 (function renderMeta() {
   const genDate = new Date(META.generated_at);
@@ -422,8 +435,9 @@ function renderScatter() {
       tooltip.style.left = (e.clientX + 14) + "px";
       tooltip.style.top = (e.clientY + 14) + "px";
       tooltip.innerHTML = `
-        <div class="t-name">${esc(p.web_name)} <span class="pos-pill pos-${p.position}">${p.position}</span></div>
+        <div class="t-name">${esc(p.web_name)}${statusBadge(p)} <span class="pos-pill pos-${p.position}">${p.position}</span></div>
         <div class="t-row"><span>${esc(p.team_name)}</span><b>${fmtCost(p.now_cost)}</b></div>
+        <div class="t-row"><span>Actual pts</span><b>${fmt(p.season_points, 0)}</b></div>
         <div class="t-row"><span>Predicted</span><b>${fmt(p.predicted_points)}</b></div>
         <div class="t-row"><span>Recent avg</span><b>${fmt(p.recent_points_avg)}</b></div>
         <div class="t-row"><span>Owned</span><b>${fmt(p.ownership_pct)}%</b></div>
@@ -439,7 +453,7 @@ function renderScatter() {
   const tbody = document.querySelector("#gems-table tbody");
   tbody.innerHTML = gems.map(p => `
     <tr>
-      <td>${esc(p.web_name)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
+      <td>${esc(p.web_name)}${statusBadge(p)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
       <td class="num">${fmt(p.ownership_pct)}%</td>
       <td class="num">${fmt(p.season_points, 0)}</td>
@@ -486,7 +500,7 @@ function renderFullTable() {
   const tbody = document.querySelector("#full-table tbody");
   tbody.innerHTML = rows.map(p => `
     <tr>
-      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}</td>
+      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}</td>
       <td>${esc(p.team_name)}</td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
       <td class="num">${fmtCost(p.now_cost)}</td>
