@@ -14,7 +14,7 @@ META_FILE = Path("fpl_ml_meta.json")
 OUTPUT_FILE = Path("docs/index.html")
 
 PLAYER_COLUMNS = [
-    "id", "web_name", "team_name", "position", "now_cost", "event", "weeks_ahead",
+    "id", "web_name", "team_name", "position", "now_cost", "event", "weeks_ahead", "was_home",
     "predicted_points", "predicted_points_5gw", "points_per_million",
     "season_points", "recent_points_avg",
     "underperformance_gap", "ownership_pct", "goals_vs_npxg90",

@@ -32,6 +32,7 @@
     --baseline: #c3c2b7;
     --good: #0ca30c;
     --critical: #d03b3b;
+    --diff-1: #0ca30c; --diff-2: #7cad2e; --diff-3: #96650f; --diff-4: #d97a3a; --diff-5: #d03b3b;
     --pos-gk: #2a78d6; --pos-def: #1baf7a; --pos-mid: #4a3aa7; --pos-fwd: #e34948;
     --shadow: 0 1px 2px rgba(20,23,15,0.06), 0 8px 24px -12px rgba(20,23,15,0.16);
   }
@@ -57,6 +58,7 @@
       --baseline: #383835;
       --good: #0ca30c;
     --critical: #d03b3b;
+    --diff-1: #0ca30c; --diff-2: #7cad2e; --diff-3: #96650f; --diff-4: #d97a3a; --diff-5: #d03b3b;
       --pos-gk: #3987e5; --pos-def: #199e70; --pos-mid: #9085e9; --pos-fwd: #e66767;
       --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
     }
@@ -82,6 +84,7 @@
     --baseline: #383835;
     --good: #0ca30c;
     --critical: #d03b3b;
+    --diff-1: #0ca30c; --diff-2: #7cad2e; --diff-3: #96650f; --diff-4: #d97a3a; --diff-5: #d03b3b;
     --pos-gk: #3987e5; --pos-def: #199e70; --pos-mid: #9085e9; --pos-fwd: #e66767;
     --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px -12px rgba(0,0,0,0.5);
   }
@@ -176,7 +179,7 @@
   .scatter-dot:hover { stroke: var(--ink-primary); }
 
   /* tables */
-  .table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border); border-radius: 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 560px; }
   thead th {
     position: sticky; top: 0; background: var(--surface); text-align: left;
@@ -202,6 +205,31 @@
 
   .gap-positive { color: var(--good); font-weight: 600; }
 
+  .ha-pill {
+    display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 5px;
+    border: 1px solid var(--border-strong); color: var(--ink-secondary); letter-spacing: 0.02em;
+  }
+  .ha-pill.home { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--border-strong)); }
+
+  .luck-due { color: var(--good); font-weight: 600; }
+  .luck-hot { color: var(--gold); font-weight: 600; }
+
+  .badge-icon { font-size: 11px; margin-left: 3px; cursor: help; }
+
+  /* fixture ticker */
+  .ticker-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border); border-radius: 10px; }
+  table.ticker { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+  table.ticker th { text-align: left; padding: 8px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); font-weight: 600; border-bottom: 1px solid var(--border-strong); background: var(--surface); position: sticky; top: 0; }
+  table.ticker td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  table.ticker tr:last-child td { border-bottom: none; }
+  table.ticker td.team-cell { font-weight: 600; white-space: nowrap; }
+  .fdr-chip {
+    display: flex; align-items: center; justify-content: center; gap: 4px;
+    height: 28px; border-radius: 6px; font-size: 12px; font-weight: 700; color: #fff;
+    font-family: "IBM Plex Mono", monospace;
+  }
+  .fdr-chip .venue { font-size: 9px; opacity: 0.85; font-weight: 600; }
+
   .table-toolbar { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
   .search-input, .select-input {
     font-family: "Public Sans", sans-serif; font-size: 13.5px; padding: 8px 12px;
@@ -225,6 +253,27 @@
 
   a { color: inherit; }
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @media (max-width: 640px) {
+    body { font-size: 14px; }
+    .shell { padding: 0 12px 48px; }
+    .topbar-inner { padding: 12px 12px; gap: 8px; }
+    .brand { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .brand h1 { font-size: 21px; }
+    .brand .tagline { font-size: 11.5px; }
+    .meta-line { font-size: 12px; gap: 10px; }
+    .tiles { gap: 8px; margin: 20px 0 28px; }
+    .tile { padding: 12px 14px; }
+    .tile .value { font-size: 24px; }
+    section { margin: 34px 0; }
+    .section-head h2 { font-size: 20px; }
+    .section-intro { font-size: 13px; }
+    .card { padding: 14px 16px; }
+    .gems-layout { gap: 16px; }
+    thead th, tbody td { padding: 7px 9px; }
+    .table-body-scroll { max-height: 440px; }
+    .fdr-chip { height: 24px; font-size: 11px; }
+  }
 </style>
 </head>
 <body>
@@ -242,6 +291,17 @@
 <div class="shell">
 
   <div class="tiles" id="tiles"></div>
+
+  <section id="ticker-section">
+    <div class="section-head"><h2>Fixture Ticker</h2></div>
+    <p class="section-intro">Every club's next 5 gameweeks at a glance — green is easy, red is hard, per FPL's own difficulty rating.</p>
+    <div class="ticker-scroll">
+      <table class="ticker" id="fixture-ticker">
+        <thead><tr><th>Team</th><th>GW+1</th><th>GW+2</th><th>GW+3</th><th>GW+4</th><th>GW+5</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
 
   <section id="gems-section">
     <div class="section-head">
@@ -263,7 +323,7 @@
         <div class="table-scroll">
           <table id="gems-table">
             <thead><tr>
-              <th>Player</th><th>Pos</th><th class="num">Owned</th><th class="num">Actual</th><th class="num">Pred.</th><th class="num">Gap</th>
+              <th>Player</th><th>Pos</th><th>H/A</th><th class="num">Owned</th><th class="num">Actual</th><th class="num">Pred.</th><th class="num">Gap</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -295,12 +355,14 @@
           <th data-key="web_name">Player</th>
           <th data-key="team_name">Team</th>
           <th data-key="position">Pos</th>
+          <th>H/A</th>
           <th class="num" data-key="now_cost">Cost</th>
           <th class="num" data-key="ownership_pct">Owned %</th>
           <th class="num" data-key="season_points">Actual Pts</th>
           <th class="num" data-key="_predShown" id="pred-col-header">Pred. Pts</th>
           <th class="num" data-key="points_per_million">Pts/£m</th>
           <th class="num" data-key="underperformance_gap">Gap</th>
+          <th class="num" data-key="goals_vs_npxg90">Finishing</th>
           <th class="num" data-key="difficulty">FDR</th>
         </tr></thead>
         <tbody></tbody>
@@ -344,6 +406,42 @@ function statusBadge(p) {
   return ` <span title="${esc(title)}" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-left:3px;vertical-align:middle;"></span>`;
 }
 
+// minutes_sd needs at least 2 games played to mean anything -- early season this will mostly
+// read 0 for everyone, which is correct (not enough data yet), not a bug.
+const ROTATION_RISK_THRESHOLD = 20;
+function rotationBadge(p) {
+  if (!(p.minutes_sd > ROTATION_RISK_THRESHOLD)) return "";
+  return ` <span class="badge-icon" title="Rotation risk — minutes have varied by around ±${Math.round(p.minutes_sd)} min over recent games">🔄</span>`;
+}
+
+function haPill(p) {
+  return `<span class="ha-pill${p.was_home ? " home" : ""}">${p.was_home ? "H" : "A"}</span>`;
+}
+
+function luckCell(p) {
+  const v = p.goals_vs_npxg90;
+  if (Math.abs(v) < 0.05) return fmt(v, 2);
+  const cls = v < 0 ? "luck-due" : "luck-hot";
+  const title = v < 0 ? "Scoring less than their chances suggest -- due a goal" : "Scoring more than their chances suggest -- may cool off";
+  return `<span class="${cls}" title="${title}">${v > 0 ? "+" : ""}${fmt(v, 2)}</span>`;
+}
+
+function difficultyChip(difficulty, wasHome) {
+  if (difficulty == null) return "";
+  return `<div class="fdr-chip" style="background:var(--diff-${difficulty})">${difficulty}<span class="venue">${wasHome ? "H" : "A"}</span></div>`;
+}
+
+// ---------- persisted filter state ----------
+function loadState(key, fallback) {
+  try {
+    const v = localStorage.getItem("scoutingReport." + key);
+    return v === null ? fallback : JSON.parse(v);
+  } catch { return fallback; }
+}
+function saveState(key, value) {
+  try { localStorage.setItem("scoutingReport." + key, JSON.stringify(value)); } catch {}
+}
+
 // ---------- header meta ----------
 (function renderMeta() {
   const genDate = new Date(META.generated_at);
@@ -373,7 +471,7 @@ function statusBadge(p) {
 })();
 
 // ---------- position filter (shared by scatter) ----------
-let activePosition = "";
+let activePosition = loadState("activePosition", "");
 const POSITIONS = ["GK", "DEF", "MID", "FWD"];
 function renderPositionChips() {
   const el = document.getElementById("position-filter");
@@ -382,7 +480,7 @@ function renderPositionChips() {
     return `<button class="chip${activePosition === val ? " active" : ""}" data-pos="${val}">${p}</button>`;
   }).join("");
   el.querySelectorAll(".chip").forEach(btn => {
-    btn.addEventListener("click", () => { activePosition = btn.dataset.pos; renderPositionChips(); renderScatter(); });
+    btn.addEventListener("click", () => { activePosition = btn.dataset.pos; saveState("activePosition", activePosition); renderPositionChips(); renderScatter(); });
   });
 }
 
@@ -453,8 +551,9 @@ function renderScatter() {
   const tbody = document.querySelector("#gems-table tbody");
   tbody.innerHTML = gems.map(p => `
     <tr>
-      <td>${esc(p.web_name)}${statusBadge(p)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
+      <td>${esc(p.web_name)}${statusBadge(p)}${rotationBadge(p)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
+      <td>${haPill(p)}</td>
       <td class="num">${fmt(p.ownership_pct)}%</td>
       <td class="num">${fmt(p.season_points, 0)}</td>
       <td class="num">${fmt(p.predicted_points)}</td>
@@ -464,7 +563,9 @@ function renderScatter() {
 })();
 
 // ---------- full predictions table ----------
-let sortKey = "_predShown", sortDir = -1, searchTerm = "", filterPos = "", horizon = "1";
+let sortKey = "_predShown", sortDir = -1, searchTerm = "";
+let filterPos = loadState("filterPos", "");
+let horizon = loadState("horizon", "1");
 const maxWeeksAhead = META.max_weeks_ahead || 1;
 
 function renderHorizonOptions() {
@@ -500,15 +601,17 @@ function renderFullTable() {
   const tbody = document.querySelector("#full-table tbody");
   tbody.innerHTML = rows.map(p => `
     <tr>
-      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}</td>
+      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}${rotationBadge(p)}</td>
       <td>${esc(p.team_name)}</td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
+      <td>${haPill(p)}</td>
       <td class="num">${fmtCost(p.now_cost)}</td>
       <td class="num">${fmt(p.ownership_pct)}%</td>
       <td class="num">${fmt(p.season_points, 0)}</td>
       <td class="num">${fmt(p._predShown)}</td>
       <td class="num">${fmt(p.points_per_million)}</td>
       <td class="num${p.underperformance_gap > 0 ? " gap-positive" : ""}">${p.underperformance_gap > 0 ? "+" : ""}${fmt(p.underperformance_gap)}</td>
+      <td class="num">${luckCell(p)}</td>
       <td class="num">${p.difficulty}</td>
     </tr>
   `).join("");
@@ -520,12 +623,13 @@ document.querySelectorAll("#full-table th[data-key]").forEach(th => {
     renderFullTable();
   });
 });
-document.getElementById("filter-horizon").addEventListener("change", e => { horizon = e.target.value; renderFullTable(); });
+document.getElementById("filter-horizon").addEventListener("change", e => { horizon = e.target.value; saveState("horizon", horizon); renderFullTable(); });
 document.getElementById("search").addEventListener("input", e => { searchTerm = e.target.value; renderFullTable(); });
-document.getElementById("filter-position").addEventListener("change", e => { filterPos = e.target.value; renderFullTable(); });
+document.getElementById("filter-position").value = filterPos;
+document.getElementById("filter-position").addEventListener("change", e => { filterPos = e.target.value; saveState("filterPos", filterPos); renderFullTable(); });
 
 // ---------- feature importance (one model per position) ----------
-let fiPosition = "MID";
+let fiPosition = loadState("fiPosition", "MID");
 function renderFeatureImportance() {
   const rows = FEATURES.filter(f => f.position === fiPosition).slice(0, 8);
   const max = Math.max(...rows.map(f => f.importance_gain_pct));
@@ -541,8 +645,23 @@ function renderFiPositionChips() {
   const el = document.getElementById("fi-position-filter");
   el.innerHTML = POSITIONS.map(p => `<button class="chip${fiPosition === p ? " active" : ""}" data-pos="${p}">${p}</button>`).join("");
   el.querySelectorAll(".chip").forEach(btn => {
-    btn.addEventListener("click", () => { fiPosition = btn.dataset.pos; renderFiPositionChips(); renderFeatureImportance(); });
+    btn.addEventListener("click", () => { fiPosition = btn.dataset.pos; saveState("fiPosition", fiPosition); renderFiPositionChips(); renderFeatureImportance(); });
   });
+}
+
+// ---------- fixture ticker ----------
+function renderFixtureTicker() {
+  const weeks = META.max_weeks_ahead || 1;
+  const teams = [...new Set(PLAYERS.map(p => p.team_name))].sort();
+  const tbody = document.querySelector("#fixture-ticker tbody");
+  tbody.innerHTML = teams.map(team => {
+    const cells = [];
+    for (let w = 1; w <= weeks; w++) {
+      const rep = PLAYERS.find(p => p.team_name === team && p.weeks_ahead === w);
+      cells.push(`<td>${rep ? difficultyChip(rep.difficulty, rep.was_home) : ""}</td>`);
+    }
+    return `<tr><td class="team-cell">${esc(team)}</td>${cells.join("")}</tr>`;
+  }).join("");
 }
 
 renderPositionChips();
@@ -551,6 +670,7 @@ renderHorizonOptions();
 renderFullTable();
 renderFiPositionChips();
 renderFeatureImportance();
+renderFixtureTicker();
 </script>
 </body>
 </html>
