@@ -11,7 +11,6 @@ can't silently drift from what the real pipeline does.
 """
 import json
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from understatapi import UnderstatClient
@@ -24,9 +23,11 @@ from fpl_ml_model import (
     add_prematch_team_form,
     build_prior_season_rows,
     build_team_form_lookup,
+    compute_sample_weights,
     get_understat_player_stats,
     get_understat_team_matches,
     load_prior_season_archive,
+    make_model,
     match_understat_players,
 )
 
@@ -55,23 +56,10 @@ def build_backtest_elements(merged_gw, player_idlist):
     return elements
 
 
-def make_model():
-    return lgb.LGBMRegressor(
-        objective="regression",
-        n_estimators=250,
-        learning_rate=0.04,
-        num_leaves=15,
-        max_depth=5,
-        min_child_samples=30,
-        reg_lambda=2.0,
-        random_state=42,
-        verbosity=-1,
-    )
-
-
 def evaluate_position(train, test, position):
-    model = make_model()
-    model.fit(train[POSITION_FEATURES], train["total_points"])
+    model = make_model(position)
+    weights = compute_sample_weights(train["date"], as_of=pd.Timestamp(train["date"].max(), tz="UTC"))
+    model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
     predictions = np.clip(model.predict(test[POSITION_FEATURES]), 0, 15)
     actual = test["total_points"].to_numpy()
 

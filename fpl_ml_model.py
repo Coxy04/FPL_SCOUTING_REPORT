@@ -24,6 +24,7 @@ PRIOR_SEASON_UNDERSTAT = "2025"
 PRIOR_SEASON_ARCHIVE = "2025-26"
 TEAM_FORM_WINDOW = 6
 MAX_FUTURE_GAMEWEEKS = 5
+RECENCY_HALF_LIFE_DAYS = 180
 NAME_MATCH_CUTOFF = 0.85
 PRIOR_SEASON_NAME_MATCH_CUTOFF = 0.9
 
@@ -81,6 +82,41 @@ FEATURES = [
 # for the same tree splits this way, and per-position sample sizes (roughly 1,000-4,200 rows
 # each) are large enough that specializing doesn't starve any of them.
 POSITION_FEATURES = [f for f in FEATURES if not f.startswith("position_")]
+
+DEFAULT_MODEL_PARAMS = {
+    "n_estimators": 250,
+    "learning_rate": 0.04,
+    "num_leaves": 15,
+    "max_depth": 5,
+    "min_child_samples": 30,
+    "reg_lambda": 2.0,
+}
+
+# Per-position hyperparameters found by tune_model.py's random search (scored across two
+# time-based holdout folds, so these beat the defaults on more than one window, not just one
+# lucky split). MID's default settings already won, so it's left out and falls back to
+# DEFAULT_MODEL_PARAMS. Re-run tune_model.py periodically and update this as the season evolves.
+POSITION_MODEL_PARAMS = {
+    "GK": {"n_estimators": 200, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 7, "min_child_samples": 10, "reg_lambda": 4.0},
+    "DEF": {"n_estimators": 100, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 5, "min_child_samples": 10, "reg_lambda": 0.5},
+    "FWD": {"n_estimators": 100, "learning_rate": 0.06, "num_leaves": 31, "max_depth": 7, "min_child_samples": 20, "reg_lambda": 4.0},
+}
+
+
+def make_model(position):
+    params = POSITION_MODEL_PARAMS.get(position, DEFAULT_MODEL_PARAMS)
+    return lgb.LGBMRegressor(objective="regression", random_state=42, verbosity=-1, **params)
+
+
+def compute_sample_weights(dates, half_life_days=RECENCY_HALF_LIFE_DAYS, as_of=None):
+    """Recency weighting: a row from last season should count for less than one from this
+    week, since team/player form drifts over time. Exponential decay by calendar days, not
+    gameweeks, so it blends current-season and archive rows on one consistent scale."""
+    as_of = as_of or pd.Timestamp.now(tz="UTC")
+    parsed = pd.to_datetime(dates, utc=True, errors="coerce")
+    days_ago = (as_of - parsed).dt.days.clip(lower=0)
+    weights = 0.5 ** (days_ago / half_life_days)
+    return weights.fillna(weights.median())
 
 
 def get_json(session, endpoint):
@@ -327,6 +363,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "total_points": row.total_points,
                 "source": f"fpl_archive_{PRIOR_SEASON_ARCHIVE}",
                 "gw": row.GW,
+                "date": date,
             }
         )
     return pd.DataFrame(rows)
@@ -446,6 +483,7 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
                     "xgchain90": player_stats.get("xgchain90", 0),
                     "position": position,
                     "total_points": match.get("total_points", 0),
+                    "date": date,
                 }
             )
     return pd.DataFrame(rows)
@@ -589,25 +627,14 @@ def main():
         raise RuntimeError("Not enough historical rows to train the model.")
     print(f"Training rows: {len(training)} ({(training['source'] == 'fpl_live_current_season').sum()} current season, {(training['source'] != 'fpl_live_current_season').sum()} from {PRIOR_SEASON_ARCHIVE} archive)")
 
-    def make_model():
-        return lgb.LGBMRegressor(
-            objective="regression",
-            n_estimators=250,
-            learning_rate=0.04,
-            num_leaves=15,
-            max_depth=5,
-            min_child_samples=30,
-            reg_lambda=2.0,
-            random_state=42,
-            verbosity=-1,
-        )
+    training["sample_weight"] = compute_sample_weights(training["date"])
 
     models = {}
     importance_tables = []
     for position in POSITION_MAP.values():
         subset = training[training["position"] == position]
-        model = make_model()
-        model.fit(subset[POSITION_FEATURES], subset["total_points"])
+        model = make_model(position)
+        model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=subset["sample_weight"])
         models[position] = model
 
         position_importance = pd.DataFrame(

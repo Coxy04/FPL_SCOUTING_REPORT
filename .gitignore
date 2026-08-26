@@ -6,5 +6,6 @@ fpl_ml_hidden_gems.csv
 fpl_ml_feature_importance.csv
 fpl_ml_meta.json
 fpl_ml_backtest.json
+fpl_ml_tuning.json
 .vscode/
 .claude/
