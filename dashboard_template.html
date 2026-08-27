@@ -414,6 +414,15 @@ function rotationBadge(p) {
   return ` <span class="badge-icon" title="Rotation risk — minutes have varied by around ±${Math.round(p.minutes_sd)} min over recent games">🔄</span>`;
 }
 
+// Flags players averaging under 60 min/game over their recent history -- distinct from rotation
+// risk (which flags high variance, not low average): this catches a squad player who reliably
+// gets limited game time every week, not just someone whose minutes swing unpredictably.
+const LOW_MINUTES_THRESHOLD = 60;
+function lowMinutesBadge(p) {
+  if (!(p.minutes > 0 && p.minutes < LOW_MINUTES_THRESHOLD)) return "";
+  return ` <span class="badge-icon" title="Averaging ${Math.round(p.minutes)} min/game over recent fixtures">🪑</span>`;
+}
+
 function haPill(p) {
   return `<span class="ha-pill${p.was_home ? " home" : ""}">${p.was_home ? "H" : "A"}</span>`;
 }
@@ -551,7 +560,7 @@ function renderScatter() {
   const tbody = document.querySelector("#gems-table tbody");
   tbody.innerHTML = gems.map(p => `
     <tr>
-      <td>${esc(p.web_name)}${statusBadge(p)}${rotationBadge(p)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
+      <td>${esc(p.web_name)}${statusBadge(p)}${rotationBadge(p)}${lowMinutesBadge(p)} <span style="color:var(--ink-muted);font-size:12px;">${esc(p.team_name)}</span></td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
       <td>${haPill(p)}</td>
       <td class="num">${fmt(p.ownership_pct)}%</td>
@@ -601,7 +610,7 @@ function renderFullTable() {
   const tbody = document.querySelector("#full-table tbody");
   tbody.innerHTML = rows.map(p => `
     <tr>
-      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}${rotationBadge(p)}</td>
+      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}${rotationBadge(p)}${lowMinutesBadge(p)}</td>
       <td>${esc(p.team_name)}</td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
       <td>${haPill(p)}</td>

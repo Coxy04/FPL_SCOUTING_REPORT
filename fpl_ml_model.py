@@ -1,5 +1,6 @@
 import difflib
 import json
+import sys
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ PRIOR_SEASON_ARCHIVE = "2025-26"
 TEAM_FORM_WINDOW = 6
 MAX_FUTURE_GAMEWEEKS = 5
 RECENCY_HALF_LIFE_DAYS = 180
+DEFAULT_PLAYING_TIME_DENOMINATOR = 60
 NAME_MATCH_CUTOFF = 0.85
 PRIOR_SEASON_NAME_MATCH_CUTOFF = 0.9
 
@@ -91,23 +93,25 @@ DEFAULT_MODEL_PARAMS = {
     "min_child_samples": 30,
     "reg_lambda": 2.0,
     "half_life_days": RECENCY_HALF_LIFE_DAYS,
+    "playing_time_denominator": DEFAULT_PLAYING_TIME_DENOMINATOR,
 }
 
-# LGBMRegressor doesn't accept half_life_days -- it's ours, consumed by compute_sample_weights,
-# not the model itself. Every params dict (defaults, per-position overrides, and search
-# candidates) carries it alongside the real LightGBM hyperparameters; strip it out right before
-# constructing the model.
-NON_LGB_PARAM_KEYS = ("half_life_days",)
+# LGBMRegressor doesn't accept half_life_days or playing_time_denominator -- they're ours,
+# consumed by compute_sample_weights and the playing-time multiplier respectively, not the model
+# itself. Every params dict (defaults, per-position overrides, and search candidates) carries
+# them alongside the real LightGBM hyperparameters; strip them out right before constructing the
+# model.
+NON_LGB_PARAM_KEYS = ("half_life_days", "playing_time_denominator")
 
 # Per-position hyperparameters found by tune_model.py's random search (scored across two
 # time-based holdout folds, so these beat the defaults on more than one window, not just one
 # lucky split). MID's default settings already won, so it's left out and falls back to
 # DEFAULT_MODEL_PARAMS. Re-run tune_model.py periodically and update this as the season evolves.
 POSITION_MODEL_PARAMS = {
-    "GK": {"n_estimators": 150, "learning_rate": 0.06, "num_leaves": 7, "max_depth": 6, "min_child_samples": 80, "reg_lambda": 4.0, "half_life_days": RECENCY_HALF_LIFE_DAYS},
-    "DEF": {"n_estimators": 100, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 5, "min_child_samples": 10, "reg_lambda": 0.5, "half_life_days": RECENCY_HALF_LIFE_DAYS},
-    "MID": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 15, "max_depth": 5, "min_child_samples": 30, "reg_lambda": 2.0, "half_life_days": RECENCY_HALF_LIFE_DAYS},
-    "FWD": {"n_estimators": 200, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 6, "min_child_samples": 10, "reg_lambda": 8.0, "half_life_days": RECENCY_HALF_LIFE_DAYS},
+    "GK": {"n_estimators": 200, "learning_rate": 0.06, "num_leaves": 31, "max_depth": 5, "min_child_samples": 30, "reg_lambda": 4.0, "half_life_days": 60, "playing_time_denominator": 30},
+    "DEF": {"n_estimators": 150, "learning_rate": 0.03, "num_leaves": 23, "max_depth": 3, "min_child_samples": 10, "reg_lambda": 8.0, "half_life_days": 365, "playing_time_denominator": 75},
+    "MID": {"n_estimators": 150, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 4, "min_child_samples": 80, "reg_lambda": 1.0, "half_life_days": 100000, "playing_time_denominator": 75},
+    "FWD": {"n_estimators": 100, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 7, "min_child_samples": 30, "reg_lambda": 8.0, "half_life_days": 100000, "playing_time_denominator": 90},
 }
 
 
@@ -117,6 +121,10 @@ def get_position_params(position):
 
 def get_half_life_days(position):
     return get_position_params(position).get("half_life_days", RECENCY_HALF_LIFE_DAYS)
+
+
+def get_playing_time_denominator(position):
+    return get_position_params(position).get("playing_time_denominator", DEFAULT_PLAYING_TIME_DENOMINATOR)
 
 
 def make_model(position):
@@ -565,7 +573,11 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
         # form etc.) don't know that, so a benched player behind a strong defense can otherwise
         # predict a real score despite having ~0 chance of actually playing. Recent actual minutes
         # closes that gap: capped at 1.0 once averaging a full match, tapering to 0 for the unused.
-        playing_time_multiplier = min(1.0, averages.get("minutes", 0) / 60.0)
+        # The denominator is per-position and tuned (see tune_model.py) -- ablation testing showed
+        # a graduated discount actively hurts GK/MID accuracy while helping DEF/FWD, so a single
+        # hand-picked value for every position was wrong.
+        position = POSITION_MAP.get(player["element_type"])
+        playing_time_multiplier = min(1.0, averages.get("minutes", 0) / get_playing_time_denominator(position))
 
         team_fixtures = [
             f for f in fixtures
@@ -587,7 +599,7 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
                 "web_name": player["web_name"],
                 "weeks_ahead": weeks_ahead,
                 "team_name": player["team_name"],
-                "position": POSITION_MAP.get(player["element_type"]),
+                "position": position,
                 "now_cost": player.get("now_cost", 0),
                 "event": fixture.get("event", 0),
                 "was_home": was_home,
@@ -736,13 +748,11 @@ def main():
         & (nearest["underperformance_gap"] > 0)
     ].sort_values("underperformance_gap", ascending=False)
     gems.to_csv(GEMS_OUTPUT_FILE, index=False)
-    print(f"\nTop hidden gems (rated highly, under {GEM_OWNERSHIP_MAX}% owned, underperforming recent points):")
-    print(
-        gems[
-            ["web_name", "team_name", "position", "now_cost", "ownership_pct", "predicted_points", "recent_points_avg", "underperformance_gap", "goals_vs_npxg90"]
-        ].head(15).to_string(index=False)
-    )
 
+    # Written before the display prints below on purpose: a crash in a print() (player names,
+    # console encoding, whatever) must never leave meta.json stale after predictions/gems have
+    # already saved successfully -- the file the dashboard build actually depends on shouldn't be
+    # gated behind a display step that has nothing to do with the data itself.
     meta = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "training_rows_total": int(len(training)),
@@ -766,6 +776,19 @@ def main():
         json.dump(meta, f, indent=2)
     print(f"Saved {OUTPUT_FILE}")
 
+    print(f"\nTop hidden gems (rated highly, under {GEM_OWNERSHIP_MAX}% owned, underperforming recent points):")
+    print(
+        gems[
+            ["web_name", "team_name", "position", "now_cost", "ownership_pct", "predicted_points", "recent_points_avg", "underperformance_gap", "goals_vs_npxg90"]
+        ].head(15).to_string(index=False)
+    )
+
 
 if __name__ == "__main__":
+    # Windows' console/file-redirect encoding (cp1252) can't represent many player names
+    # (accents, etc.) -- without this, a print() partway through main() can crash after the
+    # predictions/gems CSVs are already saved but before meta.json is written, leaving it stale
+    # with no error surfaced anywhere obvious. utf-8 covers the full range so this can't recur.
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     main()

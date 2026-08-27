@@ -26,6 +26,7 @@ from fpl_ml_model import (
     build_team_form_lookup,
     compute_sample_weights,
     get_half_life_days,
+    get_playing_time_denominator,
     get_understat_player_stats,
     get_understat_team_matches,
     load_prior_season_archive,
@@ -65,7 +66,9 @@ def evaluate_position(train, test, position):
         train["date"], half_life_days=get_half_life_days(position), as_of=pd.Timestamp(train["date"].max(), tz="UTC")
     )
     model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
-    predictions = np.clip(model.predict(test[POSITION_FEATURES]), 0, 15)
+    predictions = model.predict(test[POSITION_FEATURES])
+    multiplier = np.minimum(1.0, test["minutes"].to_numpy() / get_playing_time_denominator(position))
+    predictions = np.clip(predictions * multiplier, 0, 15)
     actual = test["total_points"].to_numpy()
 
     model_mae = float(np.mean(np.abs(predictions - actual)))

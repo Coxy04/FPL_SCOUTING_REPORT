@@ -24,6 +24,7 @@ from understatapi import UnderstatClient
 from backtest_model import build_backtest_elements
 from fpl_ml_model import (
     DEFAULT_MODEL_PARAMS,
+    NON_LGB_PARAM_KEYS,
     POSITION_FEATURES,
     POSITION_MAP,
     POSITION_MODEL_PARAMS,
@@ -72,6 +73,11 @@ SEARCH_SPACE = {
     # whole archive) -- letting the search find whether recency weighting helps at all, and at
     # what strength, instead of trusting a hand-picked half-life.
     "half_life_days": [30, 60, 90, 120, 180, 270, 365, 730, 100000],
+    # Discounts predicted_points by min(1, recent_minutes / D). Ablation testing showed a single
+    # D=60 for every position was wrong: it helped DEF/FWD but actively hurt GK/MID accuracy, so
+    # this is searched per position like everything else here rather than hand-picked once.
+    # 100000 is effectively "off" (multiplier ~1.0 for any realistic recent-minutes value).
+    "playing_time_denominator": [30, 45, 60, 75, 90, 100000],
 }
 
 
@@ -80,7 +86,7 @@ def sample_params(rng):
 
 
 def make_model(params):
-    lgb_params = {k: v for k, v in params.items() if k != "half_life_days"}
+    lgb_params = {k: v for k, v in params.items() if k not in NON_LGB_PARAM_KEYS}
     return lgb.LGBMRegressor(objective="regression", random_state=MODEL_RANDOM_STATE, verbosity=-1, **lgb_params)
 
 
@@ -98,7 +104,10 @@ def score_params(params, position_rows, folds):
         half_life = params.get("half_life_days", DEFAULT_MODEL_PARAMS["half_life_days"])
         weights = compute_sample_weights(train["date"], half_life_days=half_life, as_of=pd.Timestamp(train["date"].max(), tz="UTC"))
         model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
-        predictions = np.clip(model.predict(test[POSITION_FEATURES]), 0, 15)
+        predictions = model.predict(test[POSITION_FEATURES])
+        denominator = params.get("playing_time_denominator", DEFAULT_MODEL_PARAMS["playing_time_denominator"])
+        multiplier = np.minimum(1.0, test["minutes"].to_numpy() / denominator)
+        predictions = np.clip(predictions * multiplier, 0, 15)
         fold_maes.append(float(np.mean(np.abs(predictions - test["total_points"].to_numpy()))))
     return float(np.mean(fold_maes)) if fold_maes else None
 
