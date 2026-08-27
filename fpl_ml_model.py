@@ -108,7 +108,7 @@ NON_LGB_PARAM_KEYS = ("half_life_days", "playing_time_denominator")
 # lucky split). MID's default settings already won, so it's left out and falls back to
 # DEFAULT_MODEL_PARAMS. Re-run tune_model.py periodically and update this as the season evolves.
 POSITION_MODEL_PARAMS = {
-    "GK": {"n_estimators": 200, "learning_rate": 0.06, "num_leaves": 31, "max_depth": 5, "min_child_samples": 30, "reg_lambda": 4.0, "half_life_days": 60, "playing_time_denominator": 30},
+    "GK": {"n_estimators": 250, "learning_rate": 0.03, "num_leaves": 7, "max_depth": 7, "min_child_samples": 50, "reg_lambda": 4.0, "half_life_days": 60, "playing_time_denominator": 90},
     "DEF": {"n_estimators": 150, "learning_rate": 0.03, "num_leaves": 23, "max_depth": 3, "min_child_samples": 10, "reg_lambda": 8.0, "half_life_days": 365, "playing_time_denominator": 75},
     "MID": {"n_estimators": 150, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 4, "min_child_samples": 80, "reg_lambda": 1.0, "half_life_days": 100000, "playing_time_denominator": 75},
     "FWD": {"n_estimators": 100, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 7, "min_child_samples": 30, "reg_lambda": 8.0, "half_life_days": 100000, "playing_time_denominator": 90},
