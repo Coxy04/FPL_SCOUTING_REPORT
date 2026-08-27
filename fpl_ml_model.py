@@ -560,6 +560,13 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
         chance = player.get("chance_of_playing_next_round")
         availability_multiplier = 1.0 if chance is None else chance / 100.0
 
+        # A fully fit third-choice keeper (or any fringe player) still gets availability_multiplier
+        # = 1.0 -- there's no injury, they're just not selected. Team-level features (clean sheet
+        # form etc.) don't know that, so a benched player behind a strong defense can otherwise
+        # predict a real score despite having ~0 chance of actually playing. Recent actual minutes
+        # closes that gap: capped at 1.0 once averaging a full match, tapering to 0 for the unused.
+        playing_time_multiplier = min(1.0, averages.get("minutes", 0) / 60.0)
+
         team_fixtures = [
             f for f in fixtures
             if not f["finished"] and player["team"] in (f["team_h"], f["team_a"])
@@ -605,6 +612,7 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
                 "status": player.get("status", "a"),
                 "chance_of_playing_next_round": chance,
                 "availability_multiplier": availability_multiplier,
+                "playing_time_multiplier": playing_time_multiplier,
             }
             rows.append(row)
         time.sleep(0.05)
@@ -706,7 +714,9 @@ def main():
         mask = (upcoming["position"] == position).to_numpy()
         if mask.any():
             upcoming.loc[mask, "predicted_points"] = model.predict(featured_upcoming.loc[mask, POSITION_FEATURES])
-    upcoming["predicted_points"] = (upcoming["predicted_points"] * upcoming["availability_multiplier"]).clip(0, 15)
+    upcoming["predicted_points"] = (
+        upcoming["predicted_points"] * upcoming["availability_multiplier"] * upcoming["playing_time_multiplier"]
+    ).clip(0, 15)
     upcoming["points_per_million"] = upcoming["predicted_points"] / (upcoming["now_cost"] / 10)
     upcoming["predicted_points_5gw"] = upcoming.groupby("id")["predicted_points"].transform("sum")
 
