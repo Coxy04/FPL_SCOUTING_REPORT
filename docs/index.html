@@ -90,7 +90,7 @@
   }
 
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
+  html, body { margin: 0; padding: 0; max-width: 100%; overflow-x: hidden; }
   body {
     background: var(--page);
     color: var(--ink-primary);
@@ -129,7 +129,7 @@
   @media (max-width: 720px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
   .tile {
     background: var(--surface-raised); border: 1px solid var(--border); border-radius: 10px;
-    padding: 16px 18px; box-shadow: var(--shadow);
+    padding: 16px 18px; box-shadow: var(--shadow); min-width: 0;
   }
   .tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); font-weight: 600; }
   .tile .value { font-family: "Big Shoulders Display", sans-serif; font-size: 32px; font-weight: 700; margin-top: 4px; line-height: 1; }
@@ -141,6 +141,27 @@
   .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
   .section-head h2 { font-size: 24px; }
   .section-intro { color: var(--ink-secondary); font-size: 14px; max-width: 62ch; margin: 6px 0 20px; }
+
+  /* reference sections: supporting context (fixture ticker, model insights) that most visits
+     don't need immediately -- collapsed by default so they don't compete with the picks above. */
+  .ref-section {
+    margin: 32px 0; border: 1px solid var(--border); border-radius: 12px;
+    background: var(--surface-raised); padding: 4px 20px;
+  }
+  .ref-section[open] { padding-bottom: 20px; }
+  .ref-section summary {
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    padding: 16px 0; cursor: pointer; list-style: none; user-select: none;
+  }
+  .ref-section summary::-webkit-details-marker { display: none; }
+  .ref-section summary h2 { font-size: 18px; }
+  .ref-section summary::before {
+    content: "›"; display: inline-block; color: var(--ink-muted); font-size: 18px; font-weight: 700;
+    transition: transform 0.15s; transform: rotate(0deg);
+  }
+  .ref-section[open] summary::before { transform: rotate(90deg); }
+  .ref-section .summary-hint { color: var(--ink-muted); font-size: 13px; }
+  .ref-section .section-intro { margin-top: 0; }
 
   /* chips / filters */
   .chip-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -160,6 +181,10 @@
   .card {
     background: var(--surface-raised); border: 1px solid var(--border); border-radius: 12px;
     padding: 18px 20px; box-shadow: var(--shadow);
+    /* Grid/flex items default to min-width:auto, which refuses to shrink below the content's
+       natural size -- a wide table inside pushes the whole grid track (and the page) wider
+       instead of scrolling internally. min-width:0 lets the table's own overflow-x:auto work. */
+    min-width: 0;
   }
   .card h3 { font-size: 15px; font-weight: 600; font-family: "Public Sans", sans-serif; color: var(--ink-secondary); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; font-size: 12px; }
 
@@ -273,6 +298,9 @@
     thead th, tbody td { padding: 7px 9px; }
     .table-body-scroll { max-height: 440px; }
     .fdr-chip { height: 24px; font-size: 11px; }
+    .ref-section { padding: 4px 14px; margin: 24px 0; }
+    .ref-section summary h2 { font-size: 16px; }
+    .ref-section .summary-hint { font-size: 12px; }
   }
 </style>
 </head>
@@ -291,17 +319,6 @@
 <div class="shell">
 
   <div class="tiles" id="tiles"></div>
-
-  <section id="ticker-section">
-    <div class="section-head"><h2>Fixture Ticker</h2></div>
-    <p class="section-intro">Every club's next 5 gameweeks at a glance — green is easy, red is hard, per FPL's own difficulty rating.</p>
-    <div class="ticker-scroll">
-      <table class="ticker" id="fixture-ticker">
-        <thead><tr><th>Team</th><th>GW+1</th><th>GW+2</th><th>GW+3</th><th>GW+4</th><th>GW+5</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
 
   <section id="gems-section">
     <div class="section-head">
@@ -370,12 +387,23 @@
     </div>
   </section>
 
-  <section id="model-section">
-    <div class="section-head"><h2>Model Insights</h2></div>
+  <details class="ref-section">
+    <summary><h2>Fixture Ticker</h2><span class="summary-hint">Which clubs have a good run coming up</span></summary>
+    <p class="section-intro">Every club's next 5 gameweeks at a glance — green is easy, red is hard, per FPL's own difficulty rating. Useful for timing transfers around a good or bad run, rather than picking one player at a time.</p>
+    <div class="ticker-scroll">
+      <table class="ticker" id="fixture-ticker">
+        <thead><tr><th>Team</th><th>GW+1</th><th>GW+2</th><th>GW+3</th><th>GW+4</th><th>GW+5</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </details>
+
+  <details class="ref-section">
+    <summary><h2>Model Insights</h2><span class="summary-hint">What the model actually weighs, by position</span></summary>
     <p class="section-intro">Each position is scored by its own model, trained only on that position's history -- a defender's model never sees a forward's rows. What each one actually weighs, by share of prediction-error reduction:</p>
     <div class="chip-row" id="fi-position-filter"></div>
     <div class="card" id="fi-card"></div>
-  </section>
+  </details>
 
   <footer>
     <p><strong>Sources:</strong> Official FPL API (live), Understat (team &amp; player xG form), and the <a href="https://github.com/vaastav/Fantasy-Premier-League" target="_blank" rel="noopener">vaastav/Fantasy-Premier-League</a> archive for prior-season training data.</p>
