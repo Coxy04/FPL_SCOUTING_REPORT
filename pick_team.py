@@ -108,10 +108,24 @@ def load_nearest_players(predictions):
     return grouped
 
 
-def pick_new_team(event):
+def get_team_code_lookup(session):
+    # FPL's own shirt icons are keyed by this per-club "code" (not the team id) -- fetched fresh
+    # here so the dashboard can render the real club shirt per player instead of a generic pill.
+    bootstrap = session.get(f"{BASE_URL}/bootstrap-static/", timeout=30).json()
+    return {t["name"]: t["code"] for t in bootstrap["teams"]}
+
+
+def pick_new_team(event, session):
     predictions = pd.read_csv(PREDICTIONS_FILE)
     nearest = load_nearest_players(predictions)
-    players = nearest[["id", "web_name", "team_name", "position", "now_cost", "predicted_points"]].to_dict("records")
+    team_code_lookup = get_team_code_lookup(session)
+    nearest = nearest.copy()
+    nearest["team_code"] = nearest["team_name"].map(team_code_lookup)
+    players = nearest[["id", "web_name", "team_name", "team_code", "position", "now_cost", "predicted_points"]].to_dict("records")
+    for p in players:
+        # pandas leaves an unmatched team_code as NaN (a float), not a clean int/None -- normalize
+        # so json.dumps in save_history doesn't choke and the dashboard gets a real int or null.
+        p["team_code"] = int(p["team_code"]) if pd.notna(p["team_code"]) else None
 
     squad = pick_squad(players)
     predicted_total = sum(
@@ -175,7 +189,7 @@ def main():
         if already_picked:
             print(f"Already have a pick for GW{upcoming_event}, skipping.")
         else:
-            entry = pick_new_team(upcoming_event)
+            entry = pick_new_team(upcoming_event, session)
             history.append(entry)
             starters = [p for p in entry["squad"] if p["is_starter"]]
             captain = next(p for p in starters if p["is_captain"])
