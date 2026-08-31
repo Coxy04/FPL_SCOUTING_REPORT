@@ -132,6 +132,20 @@ def make_model(position):
     return lgb.LGBMRegressor(objective="regression", random_state=42, verbosity=-1, **params)
 
 
+def explain_predictions(model, X, feature_names, top_n=5):
+    """Per-row SHAP-style feature contributions via LightGBM's own pred_contrib -- decomposes
+    each prediction into how much every feature pushed it up or down from the model's base value.
+    Global feature_importance (gain) can only say what a position's model weighs on average; it
+    can't say why THIS player is rated above THAT one this week. This can."""
+    contributions = model.booster_.predict(X, pred_contrib=True)
+    feature_contribs = contributions[:, :-1]
+    explanations = []
+    for row in feature_contribs:
+        pairs = sorted(zip(feature_names, row), key=lambda p: abs(p[1]), reverse=True)[:top_n]
+        explanations.append([{"feature": f, "contribution": round(float(c), 3)} for f, c in pairs])
+    return explanations
+
+
 def compute_sample_weights(dates, half_life_days=RECENCY_HALF_LIFE_DAYS, as_of=None):
     """Recency weighting: a row from last season should count for less than one from this
     week, since team/player form drifts over time. Exponential decay by calendar days, not
@@ -733,10 +747,14 @@ def main():
     upcoming = recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches)
     featured_upcoming = add_features(upcoming)
     upcoming["predicted_points"] = 0.0
+    upcoming["explanation"] = "[]"
     for position, model in models.items():
         mask = (upcoming["position"] == position).to_numpy()
         if mask.any():
-            upcoming.loc[mask, "predicted_points"] = model.predict(featured_upcoming.loc[mask, POSITION_FEATURES])
+            X = featured_upcoming.loc[mask, POSITION_FEATURES]
+            upcoming.loc[mask, "predicted_points"] = model.predict(X)
+            explanations = explain_predictions(model, X, POSITION_FEATURES)
+            upcoming.loc[mask, "explanation"] = [json.dumps(e) for e in explanations]
     upcoming["predicted_points"] = (
         upcoming["predicted_points"] * upcoming["availability_multiplier"] * upcoming["playing_time_multiplier"]
     ).clip(0, 15)

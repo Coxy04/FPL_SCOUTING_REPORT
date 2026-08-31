@@ -26,6 +26,7 @@ PLAYER_COLUMNS = [
     "team_xg_against_form", "opp_xg_for_form", "opp_xg_against_form",
     "npxg90", "xa90", "xgchain90",
     "status", "chance_of_playing_next_round", "playing_time_multiplier",
+    "explanation",
 ]
 
 
@@ -51,6 +52,10 @@ def build():
     gem_ids = set(gems["id"].tolist())
     for player in players:
         player["is_gem"] = player["id"] in gem_ids
+        try:
+            player["explanation"] = json.loads(player["explanation"])
+        except (TypeError, ValueError):
+            player["explanation"] = []
 
     features = round_numeric(
         feature_importance[["position", "feature", "importance_gain_pct"]].to_dict("records")

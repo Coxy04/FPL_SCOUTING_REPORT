@@ -266,6 +266,26 @@
 
   .badge-icon { font-size: 11px; margin-left: 3px; cursor: help; }
 
+  .why-btn {
+    font-family: "Public Sans", sans-serif; font-size: 11.5px; font-weight: 600;
+    padding: 3px 9px; border-radius: 6px; border: 1px solid var(--border-strong);
+    background: var(--surface); color: var(--ink-secondary); cursor: pointer; white-space: nowrap;
+  }
+  .why-btn:hover { border-color: var(--accent); color: var(--ink-primary); }
+  .why-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  tr.exp-row-wrap td { padding: 14px 20px 18px; background: var(--surface); white-space: normal; }
+  .exp-intro { color: var(--ink-muted); font-size: 12px; margin-bottom: 10px; }
+  .exp-row { display: grid; grid-template-columns: 190px 1fr 56px; align-items: center; gap: 10px; margin: 6px 0; font-size: 13px; }
+  .exp-label { color: var(--ink-secondary); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .exp-bar-track { position: relative; background: var(--gridline); border-radius: 4px; height: 10px; overflow: hidden; }
+  .exp-bar-fill { position: absolute; top: 0; bottom: 0; height: 100%; }
+  .exp-bar-fill.exp-pos { background: var(--good); left: 50%; }
+  .exp-bar-fill.exp-neg { background: var(--critical); right: 50%; }
+  .exp-value { font-family: "IBM Plex Mono", monospace; font-size: 12px; text-align: right; }
+  .exp-value.exp-pos-text { color: var(--good); }
+  .exp-value.exp-neg-text { color: var(--critical); }
+  .exp-empty { color: var(--ink-muted); font-size: 13px; }
+
   /* fixture ticker */
   .ticker-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border); border-radius: 10px; }
   table.ticker { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
@@ -384,7 +404,7 @@
     <div class="section-head">
       <h2>Full Predictions</h2>
     </div>
-    <p class="section-intro">Every player with a scheduled fixture, ranked by predicted points. Search, filter, sort, and pick how far ahead to look.</p>
+    <p class="section-intro">Every player with a scheduled fixture, ranked by predicted points. Search, filter, sort, and pick how far ahead to look. Click "Why" on any row to see exactly which inputs drove that prediction up or down.</p>
     <div class="table-toolbar">
       <input class="search-input" id="search" type="text" placeholder="Search player or team…" />
       <select class="select-input" id="filter-position">
@@ -412,6 +432,7 @@
           <th class="num" data-key="underperformance_gap">Gap</th>
           <th class="num" data-key="goals_vs_npxg90">Finishing</th>
           <th class="num" data-key="difficulty">FDR</th>
+          <th>Why</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -631,6 +652,34 @@ function renderScatter() {
   `).join("");
 })();
 
+// ---------- prediction breakdowns ("Why") ----------
+const FEATURE_LABELS = {
+  minutes: "Recent minutes/game", minutes_sd: "Minutes volatility",
+  expected_goals: "Expected goals (recent)", expected_assists: "Expected assists (recent)",
+  expected_goals_conceded: "Expected goals conceded (recent)", bonus: "Bonus points (recent)",
+  was_home: "Home fixture", difficulty: "Fixture difficulty", now_cost: "Price",
+  team_xg_for_form: "Team attacking form", team_xg_against_form: "Team defensive form",
+  opp_xg_for_form: "Opponent attacking form", opp_xg_against_form: "Opponent defensive form",
+  npxg90: "Non-penalty xG/90 (season)", xa90: "xA/90 (season)", xgchain90: "Buildup involvement (xG chain/90)",
+};
+function explanationHtml(p) {
+  if (!p.explanation || !p.explanation.length) {
+    return `<div class="exp-empty">No breakdown available for this row.</div>`;
+  }
+  const maxAbs = Math.max(...p.explanation.map(e => Math.abs(e.contribution)), 0.01);
+  const rows = p.explanation.map(e => {
+    const positive = e.contribution >= 0;
+    const width = (Math.abs(e.contribution) / maxAbs * 50).toFixed(1);
+    return `
+      <div class="exp-row">
+        <div class="exp-label">${esc(FEATURE_LABELS[e.feature] || e.feature)}</div>
+        <div class="exp-bar-track"><div class="exp-bar-fill ${positive ? "exp-pos" : "exp-neg"}" style="width:${width}%"></div></div>
+        <div class="exp-value ${positive ? "exp-pos-text" : "exp-neg-text"}">${positive ? "+" : ""}${e.contribution.toFixed(2)}</div>
+      </div>`;
+  }).join("");
+  return `<div class="exp-intro">Top drivers of this ${p.position} model's raw prediction (before the availability/playing-time discount below) — green pushes the score up, red pulls it down, relative to what an average ${p.position} row would score.</div>${rows}`;
+}
+
 // ---------- full predictions table ----------
 let sortKey = "_predShown", sortDir = -1, searchTerm = "";
 let filterPos = loadState("filterPos", "");
@@ -668,7 +717,10 @@ function renderFullTable() {
   });
 
   const tbody = document.querySelector("#full-table tbody");
-  tbody.innerHTML = rows.map(p => `
+  tbody.innerHTML = rows.map(p => {
+    const rowKey = `${p.id}-${p.weeks_ahead}`;
+    const expanded = expandedRowKeys.has(rowKey);
+    const mainRow = `
     <tr>
       <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}${rotationBadge(p)}${lowMinutesBadge(p)}</td>
       <td>${esc(p.team_name)}</td>
@@ -682,9 +734,22 @@ function renderFullTable() {
       <td class="num${p.underperformance_gap > 0 ? " gap-positive" : ""}">${p.underperformance_gap > 0 ? "+" : ""}${fmt(p.underperformance_gap)}</td>
       <td class="num">${luckCell(p)}</td>
       <td class="num">${p.difficulty}</td>
-    </tr>
-  `).join("");
+      <td><button class="why-btn${expanded ? " active" : ""}" data-row-key="${rowKey}">${expanded ? "Hide" : "Why?"}</button></td>
+    </tr>`;
+    const expandRow = expanded
+      ? `<tr class="exp-row-wrap"><td colspan="13">${explanationHtml(p)}</td></tr>`
+      : "";
+    return mainRow + expandRow;
+  }).join("");
 }
+const expandedRowKeys = new Set();
+document.querySelector("#full-table tbody").addEventListener("click", e => {
+  const btn = e.target.closest(".why-btn");
+  if (!btn) return;
+  const key = btn.dataset.rowKey;
+  if (expandedRowKeys.has(key)) expandedRowKeys.delete(key); else expandedRowKeys.add(key);
+  renderFullTable();
+});
 document.querySelectorAll("#full-table th[data-key]").forEach(th => {
   th.addEventListener("click", () => {
     const key = th.dataset.key;
