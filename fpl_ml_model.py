@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import lightgbm as lgb
+import numpy as np
 import pandas as pd
 import requests
 from understatapi import UnderstatClient
@@ -136,6 +137,35 @@ def get_playing_time_denominator(position):
 def make_model(position):
     params = {k: v for k, v in get_position_params(position).items() if k not in NON_LGB_PARAM_KEYS}
     return lgb.LGBMRegressor(objective="regression", random_state=42, verbosity=-1, **params)
+
+
+# An 80% interval (10th-90th percentile) rather than a tighter or wider one -- narrow enough to be
+# useful ("this is a nailed-on 6, that's anywhere from 1 to 9"), wide enough that it isn't
+# constantly missed by variance the model can't see coming (a red card, a 90th-minute change).
+QUANTILE_LOW_ALPHA = 0.1
+QUANTILE_HIGH_ALPHA = 0.9
+
+
+def make_quantile_model(position, alpha):
+    """A separate LightGBM model trained to predict a specific percentile of the score
+    distribution (quantile regression) rather than the mean -- this is how the dashboard gets a
+    real uncertainty range ("could be anywhere from 2 to 9") instead of a single point estimate
+    that hides how spiky or reliable a player's returns actually are."""
+    params = {k: v for k, v in get_position_params(position).items() if k not in NON_LGB_PARAM_KEYS}
+    return lgb.LGBMRegressor(objective="quantile", alpha=alpha, random_state=42, verbosity=-1, **params)
+
+
+# Raw quantile-model output is NOT well calibrated out of the box -- backtest_model.py found the
+# nominal 80% interval only actually contained the real outcome 57-66% of the time on held-out
+# data, i.e. it was systematically overconfident. This margin is a conformal-prediction correction
+# (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
+# backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
+# being backed by a real, current measurement rather than trusting the model's raw quantile output.
+QUANTILE_MARGIN = {"GK": 1.029, "DEF": 0.97, "MID": 1.0, "FWD": 1.0}
+
+
+def get_quantile_margin(position):
+    return QUANTILE_MARGIN.get(position, 0.0)
 
 
 def explain_predictions(model, X, feature_names, top_n=5):
@@ -837,6 +867,7 @@ def main():
     print(f"Training rows: {len(training)} ({(training['source'] == 'fpl_live_current_season').sum()} current season, {(training['source'] != 'fpl_live_current_season').sum()} from {PRIOR_SEASON_ARCHIVE} archive)")
 
     models = {}
+    quantile_models = {}
     importance_tables = []
     for position in POSITION_MAP.values():
         subset = training[training["position"] == position]
@@ -844,6 +875,12 @@ def main():
         model = make_model(position)
         model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
         models[position] = model
+
+        low_model = make_quantile_model(position, QUANTILE_LOW_ALPHA)
+        low_model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
+        high_model = make_quantile_model(position, QUANTILE_HIGH_ALPHA)
+        high_model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
+        quantile_models[position] = (low_model, high_model)
 
         position_importance = pd.DataFrame(
             {
@@ -868,6 +905,8 @@ def main():
     upcoming = recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches)
     featured_upcoming = add_features(upcoming)
     upcoming["predicted_points"] = 0.0
+    upcoming["predicted_points_low"] = 0.0
+    upcoming["predicted_points_high"] = 0.0
     upcoming["explanation"] = "[]"
     for position, model in models.items():
         # Blank-gameweek rows (no fixture at all this week) are excluded here rather than left to
@@ -880,9 +919,25 @@ def main():
             upcoming.loc[mask, "predicted_points"] = model.predict(X)
             explanations = explain_predictions(model, X, POSITION_FEATURES)
             upcoming.loc[mask, "explanation"] = [json.dumps(e) for e in explanations]
-    upcoming["predicted_points"] = (
-        upcoming["predicted_points"] * upcoming["availability_multiplier"] * upcoming["playing_time_multiplier"]
-    ).clip(0, 15)
+
+            low_model, high_model = quantile_models[position]
+            low_raw = low_model.predict(X)
+            high_raw = high_model.predict(X)
+            # Two independently-trained quantile models aren't guaranteed monotonic ("quantile
+            # crossing") -- pointwise min/max keeps low <= high always, rather than trusting alpha
+            # order to hold on every single row.
+            margin = get_quantile_margin(position)
+            upcoming.loc[mask, "predicted_points_low"] = np.minimum(low_raw, high_raw) - margin
+            upcoming.loc[mask, "predicted_points_high"] = np.maximum(low_raw, high_raw) + margin
+
+    for column in ("predicted_points", "predicted_points_low", "predicted_points_high"):
+        upcoming[column] = (
+            upcoming[column] * upcoming["availability_multiplier"] * upcoming["playing_time_multiplier"]
+        ).clip(0, 15)
+    # The interval must contain the point estimate -- it's the same 80% central interval, just
+    # from a separately-trained model, so nothing guarantees that ordering on its own.
+    upcoming["predicted_points_low"] = np.minimum(upcoming["predicted_points_low"], upcoming["predicted_points"])
+    upcoming["predicted_points_high"] = np.maximum(upcoming["predicted_points_high"], upcoming["predicted_points"])
     upcoming["points_per_million"] = upcoming["predicted_points"] / (upcoming["now_cost"] / 10)
     upcoming["predicted_points_5gw"] = upcoming.groupby("id")["predicted_points"].transform("sum")
 

@@ -404,7 +404,7 @@
     <div class="section-head">
       <h2>Full Predictions</h2>
     </div>
-    <p class="section-intro">Every player with a scheduled fixture, ranked by predicted points. Search, filter, sort, and pick how far ahead to look. Click "Why" on any row to see exactly which inputs drove that prediction up or down.</p>
+    <p class="section-intro">Every player with a scheduled fixture, ranked by predicted points. Search, filter, sort, and pick how far ahead to look. "Range" is an 80% confidence interval from a separately-trained model, not a guess — a tight range means nailed-on, a wide one means boom-or-bust. Click "Why" on any row to see exactly which inputs drove that prediction up or down.</p>
     <div class="table-toolbar">
       <input class="search-input" id="search" type="text" placeholder="Search player or team…" />
       <select class="select-input" id="filter-position">
@@ -428,6 +428,7 @@
           <th class="num" data-key="ownership_pct">Owned %</th>
           <th class="num" data-key="season_points">Actual Pts</th>
           <th class="num" data-key="_predShown" id="pred-col-header">Pred. Pts</th>
+          <th class="num" title="80% confidence interval from a separately-trained quantile model">Range</th>
           <th class="num" data-key="points_per_million">Pts/£m</th>
           <th class="num" data-key="underperformance_gap">Gap</th>
           <th class="num" data-key="goals_vs_npxg90">Finishing</th>
@@ -712,6 +713,13 @@ function renderHorizonOptions() {
   el.value = horizon;
 }
 
+function rangeCell(p, isTotal) {
+  // predicted_points_low/high are single-fixture bounds -- showing them under the "Total N GW"
+  // view would misleadingly present one week's uncertainty as the whole window's.
+  if (isTotal || p.is_blank) return "–";
+  return `${fmt(p.predicted_points_low)}–${fmt(p.predicted_points_high)}`;
+}
+
 function renderFullTable() {
   const isTotal = horizon === "total";
   // Total view wants exactly one row per player (predicted_points_5gw already sums every fixture
@@ -748,6 +756,7 @@ function renderFullTable() {
       <td class="num">${fmt(p.ownership_pct)}%</td>
       <td class="num">${fmt(p.season_points, 0)}</td>
       <td class="num">${fmt(p._predShown)}</td>
+      <td class="num" style="color:var(--ink-muted);font-size:12.5px;">${rangeCell(p, isTotal)}</td>
       <td class="num">${fmt(p.points_per_million)}</td>
       <td class="num${p.underperformance_gap > 0 ? " gap-positive" : ""}">${p.underperformance_gap > 0 ? "+" : ""}${fmt(p.underperformance_gap)}</td>
       <td class="num">${luckCell(p)}</td>
@@ -755,7 +764,7 @@ function renderFullTable() {
       <td><button class="why-btn${expanded ? " active" : ""}" data-row-key="${rowKey}">${expanded ? "Hide" : "Why?"}</button></td>
     </tr>`;
     const expandRow = expanded
-      ? `<tr class="exp-row-wrap"><td colspan="13">${explanationHtml(p)}</td></tr>`
+      ? `<tr class="exp-row-wrap"><td colspan="14">${explanationHtml(p)}</td></tr>`
       : "";
     return mainRow + expandRow;
   }).join("");

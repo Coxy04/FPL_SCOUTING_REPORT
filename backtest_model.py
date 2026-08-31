@@ -20,6 +20,8 @@ from fpl_ml_model import (
     POSITION_FEATURES,
     POSITION_MAP,
     PRIOR_SEASON_UNDERSTAT,
+    QUANTILE_HIGH_ALPHA,
+    QUANTILE_LOW_ALPHA,
     add_features,
     add_prematch_team_form,
     build_prior_season_rows,
@@ -32,12 +34,30 @@ from fpl_ml_model import (
     get_understat_team_matches,
     load_prior_season_archive,
     make_model,
+    make_quantile_model,
     match_understat_players,
 )
 
 HOLDOUT_GAMEWEEKS = 5
 OUTPUT_FILE = "fpl_ml_backtest.json"
 HISTORY_FILE = "fpl_ml_accuracy_history.jsonl"
+MODEL_FILE = "fpl_ml_model.py"
+
+
+def apply_quantile_margin_to_source(margins):
+    """Rewrites QUANTILE_MARGIN in fpl_ml_model.py in place -- unlike tune_model.py's hyperparameter
+    search, this isn't gated behind an improvement threshold: it's a direct calibration correction,
+    not a noisy search, so it's safe (and necessary) to keep it current on every run. Git tracks
+    every change, so a bad update is always a `git revert` away."""
+    text = open(MODEL_FILE, encoding="utf-8").read()
+    pairs = ", ".join(f'"{k}": {v!r}' for k, v in margins.items())
+    new_line = f"QUANTILE_MARGIN = {{{pairs}}}"
+
+    start = text.index("QUANTILE_MARGIN = {")
+    end = text.index("\n", start)
+    text = text[:start] + new_line + text[end:]
+    open(MODEL_FILE, "w", encoding="utf-8").write(text)
+    print(f"Applied to {MODEL_FILE}: QUANTILE_MARGIN updated.")
 
 
 def build_backtest_elements(merged_gw, player_idlist):
@@ -77,6 +97,31 @@ def evaluate_position(train, test, position):
     baseline_mae = float(np.mean(np.abs(baseline_pred - actual)))
     correlation = float(np.corrcoef(predictions, actual)[0, 1]) if len(test) > 1 else None
 
+    # Coverage check for the uncertainty bands: an 80% interval (10th-90th percentile) is only
+    # meaningful if roughly 80% of real outcomes actually land inside it on data the model never
+    # trained on -- trusting the theory without checking would be exactly the "we can just make
+    # up a number" mistake this whole backtest exists to avoid.
+    low_model = make_quantile_model(position, QUANTILE_LOW_ALPHA)
+    low_model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
+    high_model = make_quantile_model(position, QUANTILE_HIGH_ALPHA)
+    high_model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
+    low_raw = low_model.predict(test[POSITION_FEATURES])
+    high_raw = high_model.predict(test[POSITION_FEATURES])
+    low = np.clip(np.minimum(low_raw, high_raw) * multiplier, 0, 15)
+    high = np.clip(np.maximum(low_raw, high_raw) * multiplier, 0, 15)
+    low = np.minimum(low, predictions)
+    high = np.maximum(high, predictions)
+    coverage = float(np.mean((actual >= low) & (actual <= high)))
+    mean_width = float(np.mean(high - low))
+
+    # Conformal-prediction margin: widen both bounds by the (1 - miscoverage) empirical quantile
+    # of how far outside the raw interval real outcomes actually landed, so the corrected interval
+    # is calibrated to genuinely hit its target coverage on data like this, not just claim to.
+    target_coverage = QUANTILE_HIGH_ALPHA - QUANTILE_LOW_ALPHA
+    nonconformity = np.maximum(low - actual, actual - high)
+    q_level = min(1.0, np.ceil((len(nonconformity) + 1) * target_coverage) / len(nonconformity))
+    quantile_margin = max(0.0, float(np.quantile(nonconformity, q_level)))
+
     return {
         "position": position,
         "train_rows": int(len(train)),
@@ -85,6 +130,10 @@ def evaluate_position(train, test, position):
         "baseline_mae": round(baseline_mae, 3),
         "improvement_vs_baseline_pct": round(100 * (1 - model_mae / baseline_mae), 1) if baseline_mae > 0 else None,
         "correlation": round(correlation, 3) if correlation is not None else None,
+        "interval_coverage_pct": round(100 * coverage, 1),
+        "interval_target_pct": round(100 * target_coverage, 1),
+        "interval_mean_width": round(mean_width, 2),
+        "quantile_margin": round(quantile_margin, 3),
     }
 
 
@@ -134,6 +183,10 @@ def main():
             f"({beat_baseline} baseline, {result['improvement_vs_baseline_pct']}% improvement)  "
             f"correlation {result['correlation']}  [{result['train_rows']} train / {result['test_rows']} test rows]"
         )
+        print(
+            f"     {result['interval_target_pct']}% interval actual coverage: {result['interval_coverage_pct']}%  "
+            f"(mean width {result['interval_mean_width']} pts)"
+        )
 
     overall_model_mae = float(np.mean([r["model_mae"] for r in results])) if results else None
     overall_baseline_mae = float(np.mean([r["baseline_mae"] for r in results])) if results else None
@@ -153,6 +206,10 @@ def main():
     with open(HISTORY_FILE, "a") as f:
         f.write(json.dumps(output) + "\n")
     print(f"Saved {OUTPUT_FILE} (and appended to {HISTORY_FILE})")
+
+    if results:
+        margins = {r["position"]: r["quantile_margin"] for r in results}
+        apply_quantile_margin_to_source(margins)
 
 
 if __name__ == "__main__":
