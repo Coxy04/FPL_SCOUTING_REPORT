@@ -20,6 +20,10 @@ Write-Host "`nScoring past picks / picking this gameweek's team..." -ForegroundC
 & ".\fpl_env\Scripts\python.exe" pick_team.py
 if ($LASTEXITCODE -ne 0) { throw "pick_team.py failed" }
 
+Write-Host "`nRating my real team and checking transfers..." -ForegroundColor Cyan
+& ".\fpl_env\Scripts\python.exe" fetch_my_team.py
+if ($LASTEXITCODE -ne 0) { throw "fetch_my_team.py failed" }
+
 Write-Host "`nBuilding dashboard..." -ForegroundColor Cyan
 & ".\fpl_env\Scripts\python.exe" build_dashboard.py
 if ($LASTEXITCODE -ne 0) { throw "build_dashboard.py failed" }

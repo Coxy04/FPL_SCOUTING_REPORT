@@ -329,6 +329,14 @@
   .exp-value.exp-neg-text { color: var(--critical); }
   .exp-empty { color: var(--ink-muted); font-size: 13px; }
 
+  .transfer-row {
+    display: flex; align-items: center; gap: 10px; margin: 8px 0; font-size: 13.5px; font-weight: 600;
+  }
+  .transfer-out { color: var(--critical); }
+  .transfer-in { color: var(--good); }
+  .transfer-arrow { color: var(--ink-muted); }
+  .transfer-row .cost { font-family: "IBM Plex Mono", monospace; font-weight: 400; color: var(--ink-muted); font-size: 12px; }
+
   /* fixture ticker */
   .ticker-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border); border-radius: 10px; }
   table.ticker { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
@@ -408,8 +416,14 @@
 
   <div class="tiles" id="tiles"></div>
 
-  <section id="team-section">
+  <section id="my-team-section">
     <div class="section-head"><h2>My Team</h2></div>
+    <p class="section-intro" id="my-team-intro"></p>
+    <div id="my-team-content"></div>
+  </section>
+
+  <section id="team-section">
+    <div class="section-head"><h2>Model's Benchmark Pick</h2></div>
     <p class="section-intro" id="team-intro"></p>
     <div id="team-content"></div>
   </section>
@@ -516,6 +530,7 @@ const PLAYERS = __PLAYERS_JSON__;
 const FEATURES = __FEATURES_JSON__;
 const META = __META_JSON__;
 const TEAM_HISTORY = __TEAM_HISTORY_JSON__;
+const MY_TEAM = __MY_TEAM_JSON__;
 
 function fmt(n, d = 1) { return (typeof n === "number" && !isNaN(n)) ? n.toFixed(d) : "–"; }
 function fmtCost(c) { return "£" + (c / 10).toFixed(1) + "m"; }
@@ -881,7 +896,56 @@ function renderFixtureTicker() {
   }).join("");
 }
 
-// ---------- my team ----------
+// ---------- shared pitch-view helpers (used by both "My Team" and "Model's Benchmark Pick") ----------
+// team_code comes straight from FPL's own bootstrap-static (the "code" field, not the team id) --
+// it's what FPL's own shirt CDN is keyed by. Older history entries picked before this was tracked
+// (e.g. the GW1 retrospective pick) won't have it, so this falls back to the plain position pill
+// rather than a broken image.
+const shirtUrl = code => `https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_${code}-110.png`;
+// Older history entries picked before opponent tracking was added won't have opponent_short_name.
+const opponentTag = p => {
+  if (!p.opponent_short_name) return "";
+  const color = p.difficulty != null ? `var(--diff-${p.difficulty})` : "var(--ink-muted)";
+  const venue = p.was_home ? "H" : "A";
+  return `<span class="opp-tag" style="background:${color}" title="Next opponent">${esc(p.opponent_short_name)} (${venue})</span>`;
+};
+// Pitch card for the Starting XI -- name, price, and predicted points together, like the real FPL
+// app's squad view, laid out one row per formation line rather than one flat wrapped list.
+const playerCard = p => `
+  <div class="player-card">
+    <span class="pos-pill pos-${p.position}">${p.position}</span>
+    ${p.is_captain ? '<span class="captain-tag" title="Captain">C</span>' : ""}
+    ${p.team_code
+      ? `<img class="shirt" src="${shirtUrl(p.team_code)}" alt="${esc(p.team_name)} shirt" loading="lazy" />`
+      : ""}
+    <span class="name">${esc(p.web_name)}</span>
+    ${opponentTag(p)}
+    <span class="cost">${fmtCost(p.now_cost)}</span>
+    <span class="pts">${fmt(p.predicted_points)} pts</span>
+  </div>
+`;
+const benchChip = p => `
+  <div class="team-player bench">
+    <span class="pos-pill pos-${p.position}">${p.position}</span>
+    ${p.team_code ? `<img src="${shirtUrl(p.team_code)}" alt="${esc(p.team_name)} shirt" loading="lazy" style="width:20px;height:auto;" />` : ""}
+    <span>${esc(p.web_name)}</span>
+    ${opponentTag(p)}
+    <span class="cost">${fmtCost(p.now_cost)}</span>
+    <span class="pts">${fmt(p.predicted_points)} pts</span>
+  </div>
+`;
+const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
+const byPos = arr => [...arr].sort((a, b) => posOrder[a.position] - posOrder[b.position] || b.predicted_points - a.predicted_points);
+const buildPitchHtml = starters => `
+  <div class="pitch">
+    ${["GK", "DEF", "MID", "FWD"].map(pos => {
+      const rowPlayers = starters.filter(p => p.position === pos).sort((a, b) => b.predicted_points - a.predicted_points);
+      return rowPlayers.length ? `<div class="pitch-row">${rowPlayers.map(playerCard).join("")}</div>` : "";
+    }).join("")}
+  </div>
+`;
+
+// ---------- model's benchmark pick ----------
 function renderTeam() {
   const intro = document.getElementById("team-intro");
   const content = document.getElementById("team-content");
@@ -892,53 +956,12 @@ function renderTeam() {
     return;
   }
 
-  intro.textContent = "A real 15-man squad picked automatically each gameweek to maximize predicted points within FPL's own budget, position, and club-limit rules -- tracked against what it actually scores.";
+  intro.textContent = "The model's own hypothetical squad -- what it would pick from scratch each gameweek to maximize predicted points within FPL's real budget, position, and club-limit rules. Not anyone's actual team; a benchmark it's tracked against below, and what \"My Team\"'s rating above is measured as a percentage of.";
 
   const sorted = [...TEAM_HISTORY].sort((a, b) => b.event - a.event);
   const current = sorted[0];
   const starters = current.squad.filter(p => p.is_starter);
   const bench = current.squad.filter(p => !p.is_starter);
-  const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
-  const byPos = arr => [...arr].sort((a, b) => posOrder[a.position] - posOrder[b.position] || b.predicted_points - a.predicted_points);
-
-  // Pitch card for the Starting XI -- name, price, and predicted points together, like the real
-  // FPL app's squad view, laid out one row per formation line rather than one flat wrapped list.
-  // team_code comes straight from FPL's own bootstrap-static (the "code" field, not the team id)
-  // -- it's what FPL's own shirt CDN is keyed by. Older history entries picked before this was
-  // tracked (e.g. the GW1 retrospective pick) won't have it, so this falls back to the plain
-  // position pill rather than a broken image.
-  const shirtUrl = code => `https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_${code}-110.png`;
-  // Older history entries picked before opponent tracking was added won't have opponent_short_name.
-  const opponentTag = p => {
-    if (!p.opponent_short_name) return "";
-    const color = p.difficulty != null ? `var(--diff-${p.difficulty})` : "var(--ink-muted)";
-    const venue = p.was_home ? "H" : "A";
-    return `<span class="opp-tag" style="background:${color}" title="Next opponent">${esc(p.opponent_short_name)} (${venue})</span>`;
-  };
-  const playerCard = p => `
-    <div class="player-card">
-      <span class="pos-pill pos-${p.position}">${p.position}</span>
-      ${p.is_captain ? '<span class="captain-tag" title="Captain">C</span>' : ""}
-      ${p.team_code
-        ? `<img class="shirt" src="${shirtUrl(p.team_code)}" alt="${esc(p.team_name)} shirt" loading="lazy" />`
-        : ""}
-      <span class="name">${esc(p.web_name)}</span>
-      ${opponentTag(p)}
-      <span class="cost">${fmtCost(p.now_cost)}</span>
-      <span class="pts">${fmt(p.predicted_points)} pts</span>
-    </div>
-  `;
-
-  const benchChip = p => `
-    <div class="team-player bench">
-      <span class="pos-pill pos-${p.position}">${p.position}</span>
-      ${p.team_code ? `<img src="${shirtUrl(p.team_code)}" alt="${esc(p.team_name)} shirt" loading="lazy" style="width:20px;height:auto;" />` : ""}
-      <span>${esc(p.web_name)}</span>
-      ${opponentTag(p)}
-      <span class="cost">${fmtCost(p.now_cost)}</span>
-      <span class="pts">${fmt(p.predicted_points)} pts</span>
-    </div>
-  `;
 
   let summaryHtml = `
     <div class="team-summary">
@@ -976,22 +999,77 @@ function renderTeam() {
     </div>
   ` : "";
 
-  const pitchHtml = `
-    <div class="pitch">
-      ${["GK", "DEF", "MID", "FWD"].map(pos => {
-        const rowPlayers = starters.filter(p => p.position === pos).sort((a, b) => b.predicted_points - a.predicted_points);
-        return rowPlayers.length ? `<div class="pitch-row">${rowPlayers.map(playerCard).join("")}</div>` : "";
-      }).join("")}
-    </div>
-  `;
-
   content.innerHTML = `
     ${summaryHtml}
     <div class="team-row-label">Starting XI</div>
-    ${pitchHtml}
+    ${buildPitchHtml(starters)}
     <div class="team-row-label">Bench</div>
     <div class="team-players">${byPos(bench).map(benchChip).join("")}</div>
     ${historyHtml}
+  `;
+}
+
+// ---------- my real team ----------
+function renderMyTeam() {
+  const intro = document.getElementById("my-team-intro");
+  const content = document.getElementById("my-team-content");
+
+  if (!MY_TEAM) {
+    intro.textContent = "";
+    content.innerHTML = `<p class="team-empty">No team linked yet -- run fetch_my_team.py to pull a real FPL squad in.</p>`;
+    return;
+  }
+
+  intro.textContent = "Your real FPL squad, pulled from the FPL API, rated as a percentage of the model's own best-possible squad for the same budget (see \"Model's Benchmark Pick\" below) -- plus the best 1- and 2-transfer moves it can find within your actual bank.";
+
+  const starters = MY_TEAM.current_squad.filter(p => p.is_starter);
+  const bench = MY_TEAM.current_squad.filter(p => !p.is_starter);
+
+  const ratingHtml = `
+    <div class="team-summary">
+      <div><div class="big">${fmt(MY_TEAM.rating_pct, 1)}%</div><div class="label">Rating vs. model's best</div></div>
+      <div><div class="big">${fmt(MY_TEAM.current_predicted_total)}</div><div class="label">Predicted (XI + captain)</div></div>
+      <div><div class="big">${fmtCost(MY_TEAM.bank * 10)}</div><div class="label">In the bank</div></div>
+      <div><div class="big">${fmtCost(MY_TEAM.team_value * 10)}</div><div class="label">Squad value</div></div>
+    </div>
+  `;
+
+  const transferCard = n => {
+    const s = MY_TEAM.transfer_scenarios[n];
+    if (!s || !s.transfers_out.length) {
+      return `<div class="card"><h3>${n} transfer${n > 1 ? "s" : ""}</h3><div class="exp-empty">No change beats your current squad.</div></div>`;
+    }
+    const moves = s.transfers_out.map((out, i) => {
+      const inP = s.transfers_in[i];
+      return `
+        <div class="transfer-row">
+          <span class="transfer-out">${esc(out.web_name)} <span class="cost">${fmtCost(out.now_cost)}</span></span>
+          <span class="transfer-arrow">→</span>
+          <span class="transfer-in">${esc(inP.web_name)} <span class="cost">${fmtCost(inP.now_cost)}</span></span>
+        </div>
+      `;
+    }).join("");
+    const gain = (s.predicted_total - MY_TEAM.current_predicted_total).toFixed(1);
+    return `
+      <div class="card">
+        <h3>${n} transfer${n > 1 ? "s" : ""} -- ${fmt(s.predicted_total)} pts (${fmt(s.rating_pct, 1)}%)</h3>
+        ${moves}
+        <div class="exp-intro" style="margin-top:8px;">+${gain} pts over your current squad</div>
+      </div>
+    `;
+  };
+
+  content.innerHTML = `
+    ${ratingHtml}
+    <div class="team-row-label">Starting XI</div>
+    ${buildPitchHtml(starters)}
+    <div class="team-row-label">Bench</div>
+    <div class="team-players">${byPos(bench).map(benchChip).join("")}</div>
+    <div class="team-row-label" style="margin-top:24px;">Suggested Transfers</div>
+    <div class="gems-layout">
+      ${transferCard(1)}
+      ${transferCard(2)}
+    </div>
   `;
 }
 
@@ -1003,6 +1081,7 @@ renderFiPositionChips();
 renderFeatureImportance();
 renderFixtureTicker();
 renderTeam();
+renderMyTeam();
 </script>
 </body>
 </html>
