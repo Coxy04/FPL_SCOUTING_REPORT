@@ -74,6 +74,10 @@ FEATURES = [
     "npxg90",
     "xa90",
     "xgchain90",
+    "xgbuildup90",
+    "shots90",
+    "key_passes90",
+    "saves",
     "clearances_blocks_interceptions",
     "recoveries",
     "tackles",
@@ -118,7 +122,7 @@ NON_LGB_PARAM_KEYS = ("half_life_days", "playing_time_denominator")
 # lucky split). MID's default settings already won, so it's left out and falls back to
 # DEFAULT_MODEL_PARAMS. Re-run tune_model.py periodically and update this as the season evolves.
 POSITION_MODEL_PARAMS = {
-    "GK": {"n_estimators": 250, "learning_rate": 0.03, "num_leaves": 7, "max_depth": 7, "min_child_samples": 50, "reg_lambda": 4.0, "half_life_days": 60, "playing_time_denominator": 90},
+    "GK": {"n_estimators": 250, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 2.0, "half_life_days": 100000, "playing_time_denominator": 30},
     "DEF": {"n_estimators": 150, "learning_rate": 0.03, "num_leaves": 23, "max_depth": 3, "min_child_samples": 10, "reg_lambda": 8.0, "half_life_days": 365, "playing_time_denominator": 75},
     "MID": {"n_estimators": 150, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 4, "min_child_samples": 80, "reg_lambda": 1.0, "half_life_days": 100000, "playing_time_denominator": 75},
     "FWD": {"n_estimators": 100, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 7, "min_child_samples": 30, "reg_lambda": 8.0, "half_life_days": 100000, "playing_time_denominator": 90},
@@ -164,7 +168,7 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 1.029, "DEF": 0.967, "MID": 1.0, "FWD": 1.0}
+QUANTILE_MARGIN = {"GK": 0.874, "DEF": 0.969, "MID": 1.0, "FWD": 1.0}
 
 
 def get_quantile_margin(position):
@@ -355,6 +359,18 @@ def get_understat_player_stats(understat, season):
                 "npxg90": float(player.get("npxG") or 0) * per90,
                 "xa90": float(player.get("xA") or 0) * per90,
                 "xgchain90": float(player.get("xGChain") or 0) * per90,
+                # xGBuildup deliberately EXCLUDES the player's own key pass/shot -- pure earlier
+                # buildup involvement, distinct from xGChain (which includes it). Catches deep
+                # playmakers who orchestrate an attack without getting the final ball.
+                "xgbuildup90": float(player.get("xGBuildup") or 0) * per90,
+                # Raw volume, not quality-weighted like npxg90/xa90 -- a real but different signal
+                # (more shots/key passes means more chances even at the same average quality).
+                "shots90": float(player.get("shots") or 0) * per90,
+                "key_passes90": float(player.get("key_passes") or 0) * per90,
+                # Non-penalty goals, for comparing against npxG on a like-for-like basis (see
+                # goals_vs_npxg90 below) -- FPL's own goals_scored includes penalties, npxG
+                # doesn't, so diffing those two was comparing different things.
+                "npg90": float(player.get("npg") or 0) * per90,
             }
         )
     return stats
@@ -531,6 +547,10 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "npxg90": prior_stats.get("npxg90", 0),
                 "xa90": prior_stats.get("xa90", 0),
                 "xgchain90": prior_stats.get("xgchain90", 0),
+                "xgbuildup90": prior_stats.get("xgbuildup90", 0),
+                "shots90": prior_stats.get("shots90", 0),
+                "key_passes90": prior_stats.get("key_passes90", 0),
+                "saves": row.saves,
                 "clearances_blocks_interceptions": row.clearances_blocks_interceptions,
                 "recoveries": row.recoveries,
                 "tackles": row.tackles,
@@ -567,6 +587,10 @@ def add_features(frame):
         "npxg90",
         "xa90",
         "xgchain90",
+        "xgbuildup90",
+        "shots90",
+        "key_passes90",
+        "saves",
         "clearances_blocks_interceptions",
         "recoveries",
         "tackles",
@@ -595,7 +619,7 @@ def add_features(frame):
 # keeps it a genuine "recent involvement" signal instead of a peek at the answer.
 LAGGED_MATCH_STATS = [
     "minutes", "expected_goals", "expected_assists", "expected_goals_conceded", "bonus",
-    "clearances_blocks_interceptions", "recoveries", "tackles", "defensive_contribution",
+    "clearances_blocks_interceptions", "recoveries", "tackles", "defensive_contribution", "saves",
 ]
 
 
@@ -700,6 +724,10 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
                     "npxg90": player_stats.get("npxg90", 0),
                     "xa90": player_stats.get("xa90", 0),
                     "xgchain90": player_stats.get("xgchain90", 0),
+                    "xgbuildup90": player_stats.get("xgbuildup90", 0),
+                    "shots90": player_stats.get("shots90", 0),
+                    "key_passes90": player_stats.get("key_passes90", 0),
+                    "saves": lagged["saves"],
                     "clearances_blocks_interceptions": lagged["clearances_blocks_interceptions"],
                     "recoveries": lagged["recoveries"],
                     "tackles": lagged["tackles"],
@@ -746,10 +774,6 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
         minutes_sd = pd.to_numeric(history_frame.get("minutes"), errors="coerce").std()
         minutes_sd = 0 if pd.isna(minutes_sd) else minutes_sd
 
-        season_minutes = player.get("minutes", 0) or 0
-        season_goals = player.get("goals_scored", 0) or 0
-        actual_goals_per90 = (season_goals / season_minutes * 90) if season_minutes > 0 else 0
-
         own_understat_team = UNDERSTAT_TEAM_MAP.get(player["team_name"])
         season_points = player.get("total_points", 0)
 
@@ -788,12 +812,18 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             "recoveries": averages.get("recoveries", 0),
             "tackles": averages.get("tackles", 0),
             "defensive_contribution": averages.get("defensive_contribution", 0),
+            "saves": averages.get("saves", 0),
             "xa90": player_stats.get("xa90", 0),
             "xgchain90": player_stats.get("xgchain90", 0),
+            "xgbuildup90": player_stats.get("xgbuildup90", 0),
+            "shots90": player_stats.get("shots90", 0),
+            "key_passes90": player_stats.get("key_passes90", 0),
             **set_piece_flags(player),
             "recent_points_avg": averages.get("total_points", 0),
             "ownership_pct": float(player.get("selected_by_percent", 0) or 0),
-            "goals_vs_npxg90": actual_goals_per90 - player_stats.get("npxg90", 0),
+            # Both sides non-penalty now: FPL's goals_scored includes penalties, npxG doesn't --
+            # diffing those was comparing different things. Understat's own npg90 fixes that.
+            "goals_vs_npxg90": player_stats.get("npg90", 0) - player_stats.get("npxg90", 0),
             "season_points": season_points,
             "status": player.get("status", "a"),
             "chance_of_playing_next_round": chance,

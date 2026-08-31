@@ -84,7 +84,7 @@ def build_gw1_rows(elements, fixtures, teams, understat_matches, prior_per90_by_
                 "team_xg_for_form": 0, "team_xg_against_form": 0,
                 "opp_xg_for_form": 0, "opp_xg_against_form": 0,
                 "clearances_blocks_interceptions": 0, "recoveries": 0, "tackles": 0,
-                "defensive_contribution": 0,
+                "defensive_contribution": 0, "saves": 0,
                 # Rest days genuinely means something pre-season (the summer break, not fatigue),
                 # so the neutral "typical week" default is the honest value here, not 0 -- 0 would
                 # read as squeezed fixture congestion, which this isn't.
@@ -95,6 +95,9 @@ def build_gw1_rows(elements, fixtures, teams, understat_matches, prior_per90_by_
                 "npxg90": prior_stats.get("npxg90", 0),
                 "xa90": prior_stats.get("xa90", 0),
                 "xgchain90": prior_stats.get("xgchain90", 0),
+                "xgbuildup90": prior_stats.get("xgbuildup90", 0),
+                "shots90": prior_stats.get("shots90", 0),
+                "key_passes90": prior_stats.get("key_passes90", 0),
             }
         )
     return pd.DataFrame(rows)
