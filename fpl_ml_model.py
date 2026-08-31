@@ -813,10 +813,39 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
     return pd.DataFrame(rows)
 
 
+def get_target_event(events):
+    """The gameweek fresh predictions should target -- the next one whose transfer deadline
+    hasn't passed yet. Returns None if we're currently mid-gameweek (deadline passed, but the
+    gameweek's matches aren't all finished): predictions for that gameweek aren't actionable any
+    more (the deadline's gone, no team change can use them), and regenerating them from FPL's own
+    API mid-gameweek is unreliable -- element-summary pre-creates a zeroed placeholder row for a
+    player's current fixture before it's even kicked off, which would corrupt recent-form
+    averages for anyone whose match hasn't happened yet. Simplest fix: don't predict into that
+    window at all -- hold whatever was generated before the deadline until the gameweek finishes."""
+    for event in sorted(events, key=lambda e: e["id"]):
+        if event["finished"]:
+            continue
+        deadline = datetime.fromisoformat(event["deadline_time"].replace("Z", "+00:00"))
+        return event["id"] if datetime.now(timezone.utc) < deadline else None
+    return None
+
+
 def main():
     print("Loading FPL data...")
     session = requests.Session()
     bootstrap = get_json(session, "bootstrap-static/")
+    target_event = get_target_event(bootstrap["events"])
+    if target_event is None:
+        print(
+            "The current gameweek's deadline has passed but it hasn't finished yet -- "
+            "predictions would only cover a gameweek you can no longer change your team for, "
+            "and FPL's own API returns zeroed placeholder data for fixtures that haven't been "
+            "played yet mid-gameweek, which corrupts recent-form averages if pulled now. "
+            "Skipping this refresh entirely -- nothing is touched. Re-run once the gameweek "
+            "finishes (or before the next deadline, whichever comes first)."
+        )
+        return
+    print(f"Targeting GW{target_event} (deadline not yet passed).")
     fixtures = get_json(session, "fixtures/")
     teams = {team["id"]: team["name"] for team in bootstrap["teams"]}
     team_codes = {team["id"]: team["code"] for team in bootstrap["teams"]}
