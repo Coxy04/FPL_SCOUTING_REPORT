@@ -80,6 +80,9 @@ FEATURES = [
     "defensive_contribution",
     "own_days_rest",
     "opp_days_rest",
+    "is_penalty_taker",
+    "is_freekick_taker",
+    "is_corner_taker",
     "position_GK",
     "position_DEF",
     "position_MID",
@@ -464,7 +467,10 @@ def match_prior_season_players(elements, player_idlist):
     return id_map, unmatched
 
 
-def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None):
+DEFAULT_SET_PIECE_FLAGS = {"is_penalty_taker": 0, "is_freekick_taker": 0, "is_corner_taker": 0}
+
+
+def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None, set_piece_lookup=None):
     gw = merged_gw.copy()
     for column in LAGGED_MATCH_STATS:
         gw[column] = pd.to_numeric(gw[column], errors="coerce").fillna(0)
@@ -472,6 +478,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
     gw["actual_minutes"] = gw["minutes"]
     gw = add_lagged_match_form(gw, group_col="element")
     rest_days_lookup = rest_days_lookup or {}
+    set_piece_lookup = set_piece_lookup or {}
 
     rows = []
     for row in gw.itertuples():
@@ -516,6 +523,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "defensive_contribution": row.defensive_contribution,
                 "own_days_rest": own_rest,
                 "opp_days_rest": opp_rest,
+                **set_piece_lookup.get(current_id, DEFAULT_SET_PIECE_FLAGS),
                 "position": row.position,
                 "total_points": row.total_points,
                 "source": f"fpl_archive_{PRIOR_SEASON_ARCHIVE}",
@@ -551,6 +559,9 @@ def add_features(frame):
         "defensive_contribution",
         "own_days_rest",
         "opp_days_rest",
+        "is_penalty_taker",
+        "is_freekick_taker",
+        "is_corner_taker",
     ]
     for column in numeric:
         frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0)
@@ -602,6 +613,25 @@ def add_lagged_match_form(frame, group_col=None):
     return frame
 
 
+def set_piece_flags(player):
+    """Primary-taker-only flags (order == 1), not backup/third-choice -- a backup rarely actually
+    takes a kick unless the primary is unavailable, so the designated taker is the signal that
+    matters. penalties_order specifically fills a real gap the model otherwise has no way to see:
+    npxg90 is NON-penalty xG by definition, so a designated penalty taker gets zero credit there
+    for that role, even though a penalty is a genuinely high-probability scoring chance.
+
+    Applied from FPL's CURRENT bootstrap-static snapshot to every row for that player, including
+    prior-season and earlier-this-season training rows -- there's no historical archive of who
+    held set-piece duty in past seasons, so this trades some noise (a player's role can change
+    over time) for having the signal at all, same trade-off already made for Understat's
+    season-aggregate npxg90/xa90/xgchain90 being applied across a player's whole current season."""
+    return {
+        "is_penalty_taker": 1 if player.get("penalties_order") == 1 else 0,
+        "is_freekick_taker": 1 if player.get("direct_freekicks_order") == 1 else 0,
+        "is_corner_taker": 1 if player.get("corners_and_indirect_freekicks_order") == 1 else 0,
+    }
+
+
 def build_training_rows(elements, fixtures, teams, session, team_form_lookup, understat_matches):
     difficulty_lookup = make_fixture_lookup(fixtures)
     rest_days_lookup = build_rest_days_lookup(fixtures)
@@ -609,6 +639,7 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
     for player in elements:
         position = POSITION_MAP.get(player["element_type"])
         player_stats = understat_matches.get(player["id"], {})
+        set_piece = set_piece_flags(player)
         history = get_json(session, f"element-summary/{player['id']}/").get("history", [])
         time.sleep(0.05)
         if not history:
@@ -661,6 +692,7 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
                     "defensive_contribution": lagged["defensive_contribution"],
                     "own_days_rest": own_rest,
                     "opp_days_rest": opp_rest,
+                    **set_piece,
                     "position": position,
                     "total_points": match.get("total_points", 0),
                     "date": date,
@@ -744,6 +776,7 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             "defensive_contribution": averages.get("defensive_contribution", 0),
             "xa90": player_stats.get("xa90", 0),
             "xgchain90": player_stats.get("xgchain90", 0),
+            **set_piece_flags(player),
             "recent_points_avg": averages.get("total_points", 0),
             "ownership_pct": float(player.get("selected_by_percent", 0) or 0),
             "goals_vs_npxg90": actual_goals_per90 - player_stats.get("npxg90", 0),
@@ -855,6 +888,7 @@ def main():
         player = player.copy()
         player["team_name"] = teams.get(player["team"], "Unknown")
         elements.append(player)
+    set_piece_lookup = {player["id"]: set_piece_flags(player) for player in elements}
 
     print("Loading Understat data...")
     understat = UnderstatClient()
@@ -893,6 +927,7 @@ def main():
         understat_matches,
         prior_per90_by_understat_id,
         prior_rest_days_lookup,
+        set_piece_lookup,
     )
 
     print("Building training data...")

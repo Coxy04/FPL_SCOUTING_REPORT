@@ -46,6 +46,7 @@ from fpl_ml_model import (
     make_fixture_lookup,
     make_model,
     match_prior_season_players,
+    set_piece_flags,
     match_understat_players,
 )
 from pick_team import HISTORY_FILE, load_history, pick_squad, save_history, score_pick
@@ -88,6 +89,9 @@ def build_gw1_rows(elements, fixtures, teams, understat_matches, prior_per90_by_
                 # so the neutral "typical week" default is the honest value here, not 0 -- 0 would
                 # read as squeezed fixture congestion, which this isn't.
                 "own_days_rest": DEFAULT_REST_DAYS, "opp_days_rest": DEFAULT_REST_DAYS,
+                # Unlike in-season stats, set-piece duty is genuinely knowable pre-season -- it's
+                # who currently holds the role, not something that requires a match to observe.
+                **set_piece_flags(player),
                 "npxg90": prior_stats.get("npxg90", 0),
                 "xa90": prior_stats.get("xa90", 0),
                 "xgchain90": prior_stats.get("xgchain90", 0),
