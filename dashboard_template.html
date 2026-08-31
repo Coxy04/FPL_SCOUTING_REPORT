@@ -230,6 +230,26 @@
 
   .gap-positive { color: var(--good); font-weight: 600; }
 
+  /* my team */
+  .team-summary { display: flex; flex-wrap: wrap; gap: 20px; align-items: baseline; margin-bottom: 18px; }
+  .team-summary .big { font-family: "Big Shoulders Display", sans-serif; font-size: 28px; font-weight: 700; }
+  .team-summary .label { color: var(--ink-muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .team-row-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); font-weight: 600; margin: 16px 0 8px; }
+  .team-row-label:first-child { margin-top: 0; }
+  .team-players { display: flex; flex-wrap: wrap; gap: 8px; }
+  .team-player {
+    display: flex; align-items: center; gap: 8px; background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; font-size: 13px; box-shadow: var(--shadow);
+  }
+  .team-player.bench { opacity: 0.6; }
+  .team-player .pts { font-family: "IBM Plex Mono", monospace; color: var(--ink-secondary); font-size: 12px; }
+  .team-player .captain-tag {
+    font-size: 10px; font-weight: 700; background: var(--gold); color: var(--page); border-radius: 4px; padding: 1px 5px;
+  }
+  .team-history-table td.diff-good { color: var(--good); font-weight: 600; }
+  .team-history-table td.diff-bad { color: var(--critical); font-weight: 600; }
+  .team-empty { color: var(--ink-muted); font-size: 14px; padding: 20px 0; }
+
   .ha-pill {
     display: inline-block; font-size: 10.5px; font-weight: 700; padding: 2px 6px; border-radius: 5px;
     border: 1px solid var(--border-strong); color: var(--ink-secondary); letter-spacing: 0.02em;
@@ -319,6 +339,12 @@
 <div class="shell">
 
   <div class="tiles" id="tiles"></div>
+
+  <section id="team-section">
+    <div class="section-head"><h2>My Team</h2></div>
+    <p class="section-intro" id="team-intro"></p>
+    <div id="team-content"></div>
+  </section>
 
   <section id="gems-section">
     <div class="section-head">
@@ -419,6 +445,7 @@
 const PLAYERS = __PLAYERS_JSON__;
 const FEATURES = __FEATURES_JSON__;
 const META = __META_JSON__;
+const TEAM_HISTORY = __TEAM_HISTORY_JSON__;
 
 function fmt(n, d = 1) { return (typeof n === "number" && !isNaN(n)) ? n.toFixed(d) : "–"; }
 function fmtCost(c) { return "£" + (c / 10).toFixed(1) + "m"; }
@@ -701,6 +728,81 @@ function renderFixtureTicker() {
   }).join("");
 }
 
+// ---------- my team ----------
+function renderTeam() {
+  const intro = document.getElementById("team-intro");
+  const content = document.getElementById("team-content");
+
+  if (!TEAM_HISTORY.length) {
+    intro.textContent = "";
+    content.innerHTML = `<p class="team-empty">No team picked yet -- run pick_team.py to select a squad for the next gameweek.</p>`;
+    return;
+  }
+
+  intro.textContent = "A real 15-man squad picked automatically each gameweek to maximize predicted points within FPL's own budget, position, and club-limit rules -- tracked against what it actually scores.";
+
+  const sorted = [...TEAM_HISTORY].sort((a, b) => b.event - a.event);
+  const current = sorted[0];
+  const starters = current.squad.filter(p => p.is_starter);
+  const bench = current.squad.filter(p => !p.is_starter);
+  const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
+  const byPos = arr => [...arr].sort((a, b) => posOrder[a.position] - posOrder[b.position] || b.predicted_points - a.predicted_points);
+
+  const playerChip = (p, bench) => `
+    <div class="team-player${bench ? " bench" : ""}">
+      <span class="pos-pill pos-${p.position}">${p.position}</span>
+      <span>${esc(p.web_name)}</span>
+      ${p.is_captain ? '<span class="captain-tag">C</span>' : ""}
+      <span class="pts">${fmt(p.predicted_points)}</span>
+    </div>
+  `;
+
+  let summaryHtml = `
+    <div class="team-summary">
+      <div><div class="big">GW ${current.event}</div><div class="label">Gameweek</div></div>
+      <div><div class="big">${fmt(current.predicted_total)}</div><div class="label">Predicted (XI + captain)</div></div>
+  `;
+  if (current.actual_total !== null && current.actual_total !== undefined) {
+    const diff = current.actual_total - current.predicted_total;
+    const cls = diff >= 0 ? "gap-positive" : "";
+    summaryHtml += `<div><div class="big ${cls}">${current.actual_total}</div><div class="label">Actual</div></div>`;
+  } else {
+    summaryHtml += `<div><div class="big" style="color:var(--ink-muted);font-size:16px;">Pending</div><div class="label">Actual (not finished)</div></div>`;
+  }
+  summaryHtml += `</div>`;
+
+  const historyHtml = sorted.length > 0 ? `
+    <div class="team-row-label" style="margin-top:24px;">History</div>
+    <div class="table-scroll">
+      <table class="team-history-table">
+        <thead><tr><th>GW</th><th class="num">Predicted</th><th class="num">Actual</th><th class="num">Diff</th></tr></thead>
+        <tbody>
+          ${sorted.map(e => {
+            const scored = e.actual_total !== null && e.actual_total !== undefined;
+            const diff = scored ? (e.actual_total - e.predicted_total) : null;
+            const diffCls = diff === null ? "" : diff >= 0 ? "diff-good" : "diff-bad";
+            return `<tr>
+              <td>GW${e.event}</td>
+              <td class="num">${fmt(e.predicted_total)}</td>
+              <td class="num">${scored ? e.actual_total : "pending"}</td>
+              <td class="num ${diffCls}">${scored ? (diff >= 0 ? "+" : "") + diff.toFixed(1) : "–"}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  ` : "";
+
+  content.innerHTML = `
+    ${summaryHtml}
+    <div class="team-row-label">Starting XI</div>
+    <div class="team-players">${byPos(starters).map(p => playerChip(p, false)).join("")}</div>
+    <div class="team-row-label">Bench</div>
+    <div class="team-players">${byPos(bench).map(p => playerChip(p, true)).join("")}</div>
+    ${historyHtml}
+  `;
+}
+
 renderPositionChips();
 renderScatter();
 renderHorizonOptions();
@@ -708,6 +810,7 @@ renderFullTable();
 renderFiPositionChips();
 renderFeatureImportance();
 renderFixtureTicker();
+renderTeam();
 </script>
 </body>
 </html>

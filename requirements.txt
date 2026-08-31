@@ -1,5 +1,6 @@
 lightgbm
 pandas
+pulp
 requests
 scikit-learn
 understatapi

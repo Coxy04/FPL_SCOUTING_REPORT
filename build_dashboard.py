@@ -11,6 +11,7 @@ PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 GEMS_FILE = Path("fpl_ml_hidden_gems.csv")
 FEATURE_IMPORTANCE_FILE = Path("fpl_ml_feature_importance.csv")
 META_FILE = Path("fpl_ml_meta.json")
+TEAM_HISTORY_FILE = Path("fpl_ml_team_history.jsonl")
 OUTPUT_FILE = Path("docs/index.html")
 
 PLAYER_COLUMNS = [
@@ -53,16 +54,24 @@ def build():
         feature_importance[["position", "feature", "importance_gain_pct"]].to_dict("records")
     )
 
+    team_history = []
+    if TEAM_HISTORY_FILE.exists():
+        team_history = [
+            json.loads(line) for line in TEAM_HISTORY_FILE.read_text().splitlines() if line.strip()
+        ]
+        team_history.sort(key=lambda e: e["event"])
+
     template = Path("dashboard_template.html").read_text(encoding="utf-8")
     html = (
         template
         .replace("__PLAYERS_JSON__", safe_json(players))
         .replace("__FEATURES_JSON__", safe_json(features))
         .replace("__META_JSON__", safe_json(meta))
+        .replace("__TEAM_HISTORY_JSON__", safe_json(team_history))
     )
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html, encoding="utf-8")
-    print(f"Built {OUTPUT_FILE} ({len(players)} players, {len(features)} features)")
+    print(f"Built {OUTPUT_FILE} ({len(players)} players, {len(features)} features, {len(team_history)} tracked picks)")
 
 
 if __name__ == "__main__":

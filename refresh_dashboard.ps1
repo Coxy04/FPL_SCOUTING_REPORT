@@ -16,12 +16,16 @@ Write-Host "`nRunning model (fetch + train + predict)..." -ForegroundColor Cyan
 & ".\fpl_env\Scripts\python.exe" fpl_ml_model.py
 if ($LASTEXITCODE -ne 0) { throw "fpl_ml_model.py failed" }
 
+Write-Host "`nScoring past picks / picking this gameweek's team..." -ForegroundColor Cyan
+& ".\fpl_env\Scripts\python.exe" pick_team.py
+if ($LASTEXITCODE -ne 0) { throw "pick_team.py failed" }
+
 Write-Host "`nBuilding dashboard..." -ForegroundColor Cyan
 & ".\fpl_env\Scripts\python.exe" build_dashboard.py
 if ($LASTEXITCODE -ne 0) { throw "build_dashboard.py failed" }
 
 Write-Host "`nPushing to GitHub Pages..." -ForegroundColor Cyan
-git add fpl_ml_model.py fpl_ml_accuracy_history.jsonl docs/index.html
+git add fpl_ml_model.py fpl_ml_accuracy_history.jsonl fpl_ml_team_history.jsonl docs/index.html
 
 $staged = git diff --cached --name-only
 if ($staged) {
