@@ -164,7 +164,7 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 1.029, "DEF": 0.97, "MID": 1.0, "FWD": 1.0}
+QUANTILE_MARGIN = {"GK": 1.029, "DEF": 0.967, "MID": 1.0, "FWD": 1.0}
 
 
 def get_quantile_margin(position):
@@ -432,13 +432,24 @@ def load_prior_season_archive():
     fixtures = pd.read_csv(f"{base}/fixtures.csv", encoding="utf-8", encoding_errors="ignore")
     teams = pd.read_csv(f"{base}/teams.csv", encoding="utf-8", encoding_errors="ignore")
     player_idlist = pd.read_csv(f"{base}/player_idlist.csv", encoding="utf-8", encoding_errors="ignore")
+    # players_raw.csv is a bootstrap-static snapshot archived alongside that season's own data --
+    # unlike gws/merged_gw.csv (match-level, no set-piece fields at all), this has the same
+    # penalties_order/direct_freekicks_order/corners_and_indirect_freekicks_order fields the live
+    # API has, keyed by that season's own player ids (same id space as merged_gw's "element"
+    # column -- confirmed full overlap). Season-accurate, not "today's snapshot applied to old
+    # rows" -- an initial version of this feature did exactly that as a stopgap before this file
+    # was found to have the real thing.
+    players_raw = pd.read_csv(f"{base}/players_raw.csv", encoding="utf-8", encoding_errors="ignore")
+    prior_set_piece_lookup = {
+        row["id"]: set_piece_flags(row) for row in players_raw.to_dict("records")
+    }
 
     difficulty_lookup = {
         row.id: (row.team_h_difficulty, row.team_a_difficulty) for row in fixtures.itertuples()
     }
     rest_days_lookup = build_rest_days_lookup(fixtures.to_dict("records"))
     team_names = {row.id: row.name for row in teams.itertuples()}
-    return merged_gw, difficulty_lookup, team_names, player_idlist, rest_days_lookup
+    return merged_gw, difficulty_lookup, team_names, player_idlist, rest_days_lookup, prior_set_piece_lookup
 
 
 def match_prior_season_players(elements, player_idlist):
@@ -470,7 +481,7 @@ def match_prior_season_players(elements, player_idlist):
 DEFAULT_SET_PIECE_FLAGS = {"is_penalty_taker": 0, "is_freekick_taker": 0, "is_corner_taker": 0}
 
 
-def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None, set_piece_lookup=None):
+def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None, prior_set_piece_lookup=None):
     gw = merged_gw.copy()
     for column in LAGGED_MATCH_STATS:
         gw[column] = pd.to_numeric(gw[column], errors="coerce").fillna(0)
@@ -478,7 +489,10 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
     gw["actual_minutes"] = gw["minutes"]
     gw = add_lagged_match_form(gw, group_col="element")
     rest_days_lookup = rest_days_lookup or {}
-    set_piece_lookup = set_piece_lookup or {}
+    # Keyed by THAT SEASON's own player id (row.element below), not the current-day id -- sourced
+    # from that season's own players_raw.csv snapshot via load_prior_season_archive, so this is
+    # season-accurate set-piece duty, not today's assignment retroactively applied to old rows.
+    prior_set_piece_lookup = prior_set_piece_lookup or {}
 
     rows = []
     for row in gw.itertuples():
@@ -523,7 +537,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "defensive_contribution": row.defensive_contribution,
                 "own_days_rest": own_rest,
                 "opp_days_rest": opp_rest,
-                **set_piece_lookup.get(current_id, DEFAULT_SET_PIECE_FLAGS),
+                **prior_set_piece_lookup.get(row.element, DEFAULT_SET_PIECE_FLAGS),
                 "position": row.position,
                 "total_points": row.total_points,
                 "source": f"fpl_archive_{PRIOR_SEASON_ARCHIVE}",
@@ -888,7 +902,6 @@ def main():
         player = player.copy()
         player["team_name"] = teams.get(player["team"], "Unknown")
         elements.append(player)
-    set_piece_lookup = {player["id"]: set_piece_flags(player) for player in elements}
 
     print("Loading Understat data...")
     understat = UnderstatClient()
@@ -913,7 +926,7 @@ def main():
         p["understat_id"]: p for p in get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
     }
 
-    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup = load_prior_season_archive()
+    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup, prior_set_piece_lookup = load_prior_season_archive()
     prior_id_map, prior_unmatched = match_prior_season_players(elements, player_idlist)
     print(f"Matched {len(prior_id_map)} of {len(player_idlist)} {PRIOR_SEASON_ARCHIVE} players to the current squad")
     print(f"  ({len(prior_unmatched)} unmatched -- mostly players who left the Premier League, which is expected).")
@@ -927,7 +940,7 @@ def main():
         understat_matches,
         prior_per90_by_understat_id,
         prior_rest_days_lookup,
-        set_piece_lookup,
+        prior_set_piece_lookup,
     )
 
     print("Building training data...")

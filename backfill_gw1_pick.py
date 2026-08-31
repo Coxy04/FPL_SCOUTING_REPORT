@@ -116,11 +116,12 @@ def train_current_models(session, elements, fixtures, teams):
         p["understat_id"]: p for p in get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
     }
 
-    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup = load_prior_season_archive()
+    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup, prior_set_piece_lookup = load_prior_season_archive()
     prior_id_map, _ = match_prior_season_players(elements, player_idlist)
     prior_rows = build_prior_season_rows(
         merged_gw, prior_difficulty_lookup, prior_team_names, prior_id_map,
         prior_team_form_lookup, understat_matches, prior_per90_by_understat_id, prior_rest_days_lookup,
+        prior_set_piece_lookup,
     )
 
     print("Building training data (same as fpl_ml_model.py)...")
