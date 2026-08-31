@@ -36,6 +36,11 @@ MY_TEAM_ID = 4340534
 PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 OUTPUT_FILE = Path("my_fpl_team.json")
 TRANSFER_OPTIONS = [1, 2]
+# A single gameweek's prediction is noisy for a decision that locks in for several weeks (one
+# unlucky fixture could tip a transfer call either way); 5 weeks starts trusting fixture-difficulty
+# ratings that far out more than they deserve. 3 is the middle ground -- long enough to smooth out
+# single-match noise, short enough that the fixtures being weighed are still reasonably known.
+HORIZON_GAMEWEEKS = 3
 # Tie-break only, same role as pick_squad's BENCH_WEIGHT -- makes the solver prefer fewer changes
 # when two squads predict equally well, instead of recommending a pointless swap on a coin flip.
 TRANSFER_PENALTY = 0.001
@@ -125,7 +130,7 @@ def starting_total(squad):
 
 def load_all_players():
     predictions = pd.read_csv(PREDICTIONS_FILE)
-    nearest = load_nearest_players(predictions)
+    nearest = load_nearest_players(predictions, horizon=HORIZON_GAMEWEEKS)
     columns = ["id", "web_name", "team_name", "position", "now_cost", "predicted_points"] + DISPLAY_COLUMNS
     players = nearest[columns].to_dict("records")
     for p in players:
@@ -187,6 +192,7 @@ def main():
     output = {
         "team_id": MY_TEAM_ID,
         "event": event,
+        "horizon_gameweeks": HORIZON_GAMEWEEKS,
         "bank": bank_raw / 10,
         "team_value": team_value_raw / 10,
         "current_squad": current_lineup,
@@ -198,8 +204,8 @@ def main():
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
 
-    print(f"{manager_name}'s team \"{entry.get('name')}\" (GW{event}): {current_total} pts predicted "
-          f"({rating_pct}% of the model's own best-possible {top_total}-pt squad)")
+    print(f"{manager_name}'s team \"{entry.get('name')}\" (GW{event}, {HORIZON_GAMEWEEKS}-GW outlook): "
+          f"{current_total} pts predicted ({rating_pct}% of the model's own best-possible {top_total}-pt squad)")
     for n in TRANSFER_OPTIONS:
         s = transfer_scenarios[str(n)]
         if s["transfers_out"]:

@@ -1020,7 +1020,8 @@ function renderMyTeam() {
     return;
   }
 
-  intro.textContent = "Your real FPL squad, pulled from the FPL API, rated as a percentage of the model's own best-possible squad for the same budget (see \"Model's Benchmark Pick\" below) -- plus the best 1- and 2-transfer moves it can find within your actual bank.";
+  const horizon = MY_TEAM.horizon_gameweeks || 1;
+  intro.textContent = `Your real FPL squad, pulled from the FPL API, rated over the next ${horizon} gameweeks as a percentage of the model's own best-possible squad for the same budget (see "Model's Benchmark Pick" below, which is scored one gameweek at a time instead) -- plus the best 1- and 2-transfer moves it can find within your actual bank. A ${horizon}-gameweek window smooths out single-match noise without leaning too hard on fixtures further out than the model can really call.`;
 
   const starters = MY_TEAM.current_squad.filter(p => p.is_starter);
   const bench = MY_TEAM.current_squad.filter(p => !p.is_starter);
@@ -1028,7 +1029,7 @@ function renderMyTeam() {
   const ratingHtml = `
     <div class="team-summary">
       <div><div class="big">${fmt(MY_TEAM.rating_pct, 1)}%</div><div class="label">Rating vs. model's best</div></div>
-      <div><div class="big">${fmt(MY_TEAM.current_predicted_total)}</div><div class="label">Predicted (XI + captain)</div></div>
+      <div><div class="big">${fmt(MY_TEAM.current_predicted_total)}</div><div class="label">Predicted, ${horizon} GW (XI + captain)</div></div>
       <div><div class="big">${fmtCost(MY_TEAM.bank * 10)}</div><div class="label">In the bank</div></div>
       <div><div class="big">${fmtCost(MY_TEAM.team_value * 10)}</div><div class="label">Squad value</div></div>
     </div>
@@ -1052,7 +1053,7 @@ function renderMyTeam() {
     const gain = (s.predicted_total - MY_TEAM.current_predicted_total).toFixed(1);
     return `
       <div class="card">
-        <h3>${n} transfer${n > 1 ? "s" : ""} -- ${fmt(s.predicted_total)} pts (${fmt(s.rating_pct, 1)}%)</h3>
+        <h3>${n} transfer${n > 1 ? "s" : ""} -- ${fmt(s.predicted_total)} pts over ${horizon} GW (${fmt(s.rating_pct, 1)}%)</h3>
         ${moves}
         <div class="exp-intro" style="margin-top:8px;">+${gain} pts over your current squad</div>
       </div>
@@ -1061,7 +1062,7 @@ function renderMyTeam() {
 
   content.innerHTML = `
     ${ratingHtml}
-    <div class="team-row-label">Starting XI</div>
+    <div class="team-row-label">Starting XI <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- points shown are the ${horizon}-gameweek total, not next week alone</span></div>
     ${buildPitchHtml(starters)}
     <div class="team-row-label">Bench</div>
     <div class="team-players">${byPos(bench).map(benchChip).join("")}</div>
