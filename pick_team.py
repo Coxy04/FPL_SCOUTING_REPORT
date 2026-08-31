@@ -19,13 +19,14 @@ auto-sub them for a bench player in formation order; this doesn't. Flagged in th
 never silently wrong.
 """
 import json
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import pulp
 import requests
+
+from fpl_ml_model import ensure_utf8_stdout
 
 BASE_URL = "https://fantasy.premierleague.com/api"
 PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
@@ -181,6 +182,5 @@ def main():
 
 
 if __name__ == "__main__":
-    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    ensure_utf8_stdout()
     main()

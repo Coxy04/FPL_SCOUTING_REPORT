@@ -20,8 +20,6 @@ than presented as a genuine advance pick.
 Reuses fpl_ml_model.py's own training functions and pick_team.py's own squad/scoring functions so
 this can't silently drift from what either actually does.
 """
-import sys
-
 import pandas as pd
 import requests
 from understatapi import UnderstatClient
@@ -36,6 +34,7 @@ from fpl_ml_model import (
     build_prior_season_rows,
     build_training_rows,
     compute_sample_weights,
+    ensure_utf8_stdout,
     get_half_life_days,
     get_json,
     get_understat_player_stats,
@@ -182,6 +181,5 @@ def main():
 
 
 if __name__ == "__main__":
-    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    ensure_utf8_stdout()
     main()

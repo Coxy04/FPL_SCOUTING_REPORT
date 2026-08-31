@@ -34,6 +34,7 @@ from fpl_ml_model import (
     build_prior_season_rows,
     build_team_form_lookup,
     compute_sample_weights,
+    ensure_utf8_stdout,
     get_understat_player_stats,
     get_understat_team_matches,
     load_prior_season_archive,
@@ -205,4 +206,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdout()
     main()

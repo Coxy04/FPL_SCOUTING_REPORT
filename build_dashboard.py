@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from fpl_ml_model import ensure_utf8_stdout
+
 PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 GEMS_FILE = Path("fpl_ml_hidden_gems.csv")
 FEATURE_IMPORTANCE_FILE = Path("fpl_ml_feature_importance.csv")
@@ -75,4 +77,5 @@ def build():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdout()
     build()

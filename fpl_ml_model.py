@@ -145,6 +145,16 @@ def compute_sample_weights(dates, half_life_days=RECENCY_HALF_LIFE_DAYS, as_of=N
     return weights.fillna(weights.median())
 
 
+def ensure_utf8_stdout():
+    """Windows' console/file-redirect encoding (cp1252) can't represent many player names
+    (accents, etc.) -- a print() of one partway through a script can crash it after some outputs
+    are already saved but before others are written, leaving those silently stale with no error
+    surfaced anywhere obvious (this has now bitten three separate scripts the same way before
+    being centralized here). Every script's entry point should call this first."""
+    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
 def get_json(session, endpoint):
     response = session.get(f"{BASE_URL}/{endpoint}", timeout=30)
     response.raise_for_status()
@@ -413,6 +423,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "source": f"fpl_archive_{PRIOR_SEASON_ARCHIVE}",
                 "gw": row.GW,
                 "date": date,
+                "current_id": current_id,
             }
         )
     return pd.DataFrame(rows)
@@ -785,10 +796,5 @@ def main():
 
 
 if __name__ == "__main__":
-    # Windows' console/file-redirect encoding (cp1252) can't represent many player names
-    # (accents, etc.) -- without this, a print() partway through main() can crash after the
-    # predictions/gems CSVs are already saved but before meta.json is written, leaving it stale
-    # with no error surfaced anywhere obvious. utf-8 covers the full range so this can't recur.
-    if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    ensure_utf8_stdout()
     main()

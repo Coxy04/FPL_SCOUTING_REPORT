@@ -18,6 +18,7 @@ from fpl_ml_model import (
     build_prior_season_rows,
     build_team_form_lookup,
     compute_sample_weights,
+    ensure_utf8_stdout,
     get_half_life_days,
     get_playing_time_denominator,
     get_understat_player_stats,
@@ -92,4 +93,5 @@ def main():
 
 
 if __name__ == "__main__":
+    ensure_utf8_stdout()
     main()
