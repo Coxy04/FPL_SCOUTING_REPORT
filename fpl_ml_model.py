@@ -73,6 +73,12 @@ FEATURES = [
     "npxg90",
     "xa90",
     "xgchain90",
+    "clearances_blocks_interceptions",
+    "recoveries",
+    "tackles",
+    "defensive_contribution",
+    "own_days_rest",
+    "opp_days_rest",
     "position_GK",
     "position_DEF",
     "position_MID",
@@ -183,6 +189,45 @@ def make_fixture_lookup(fixtures):
             fixture["team_a_difficulty"],
         )
     return lookup
+
+
+DEFAULT_REST_DAYS = 7
+
+
+def build_rest_days_lookup(fixtures):
+    """Days between a team's previous fixture and each fixture, purely from kickoff_time gaps in
+    the team's own full fixture list (finished and upcoming together, so an upcoming fixture's
+    rest is measured against its most recent COMPLETED match). Captures fixture congestion --
+    cup replays, rearranged midweek games, European away trips -- that a plain gameweek count
+    can't. A team's very first fixture in the list has no prior match to diff against, so falls
+    back to a typical week's rest rather than a misleading 0."""
+    by_team = {}
+    for fixture in fixtures:
+        kickoff = fixture.get("kickoff_time")
+        fixture_id = fixture.get("id")
+        if not kickoff or fixture_id is None:
+            continue
+        date = pd.Timestamp(kickoff)
+        for side, key in (("home", "team_h"), ("away", "team_a")):
+            team_id = fixture.get(key)
+            if team_id is not None:
+                by_team.setdefault(team_id, []).append((date, fixture_id, side))
+
+    rest_days_by_fixture = {}
+    for entries in by_team.values():
+        entries.sort(key=lambda e: e[0])
+        prev_date = None
+        for date, fixture_id, side in entries:
+            days = (date - prev_date).days if prev_date is not None else DEFAULT_REST_DAYS
+            rest_days_by_fixture.setdefault(fixture_id, {})[side] = days
+            prev_date = date
+    return rest_days_by_fixture
+
+
+def get_rest_days(rest_days_lookup, fixture_id, was_home):
+    pair = rest_days_lookup.get(fixture_id, {})
+    own_side, opp_side = ("home", "away") if was_home else ("away", "home")
+    return pair.get(own_side, DEFAULT_REST_DAYS), pair.get(opp_side, DEFAULT_REST_DAYS)
 
 
 def normalize_name(name):
@@ -358,8 +403,9 @@ def load_prior_season_archive():
     difficulty_lookup = {
         row.id: (row.team_h_difficulty, row.team_a_difficulty) for row in fixtures.itertuples()
     }
+    rest_days_lookup = build_rest_days_lookup(fixtures.to_dict("records"))
     team_names = {row.id: row.name for row in teams.itertuples()}
-    return merged_gw, difficulty_lookup, team_names, player_idlist
+    return merged_gw, difficulty_lookup, team_names, player_idlist, rest_days_lookup
 
 
 def match_prior_season_players(elements, player_idlist):
@@ -388,13 +434,14 @@ def match_prior_season_players(elements, player_idlist):
     return id_map, unmatched
 
 
-def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id):
+def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None):
     gw = merged_gw.copy()
     for column in LAGGED_MATCH_STATS:
         gw[column] = pd.to_numeric(gw[column], errors="coerce").fillna(0)
     gw = gw.sort_values(["element", "GW"]).reset_index(drop=True)
     gw["actual_minutes"] = gw["minutes"]
     gw = add_lagged_match_form(gw, group_col="element")
+    rest_days_lookup = rest_days_lookup or {}
 
     rows = []
     for row in gw.itertuples():
@@ -404,6 +451,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
 
         was_home = bool(row.was_home)
         difficulty_pair = difficulty_lookup.get(row.fixture, (3, 3))
+        own_rest, opp_rest = get_rest_days(rest_days_lookup, row.fixture, was_home)
         date = str(row.kickoff_time)[:10]
         own_understat_team = UNDERSTAT_TEAM_MAP.get(row.team)
         opponent_name = team_names.get(row.opponent_team, "")
@@ -432,6 +480,12 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "npxg90": prior_stats.get("npxg90", 0),
                 "xa90": prior_stats.get("xa90", 0),
                 "xgchain90": prior_stats.get("xgchain90", 0),
+                "clearances_blocks_interceptions": row.clearances_blocks_interceptions,
+                "recoveries": row.recoveries,
+                "tackles": row.tackles,
+                "defensive_contribution": row.defensive_contribution,
+                "own_days_rest": own_rest,
+                "opp_days_rest": opp_rest,
                 "position": row.position,
                 "total_points": row.total_points,
                 "source": f"fpl_archive_{PRIOR_SEASON_ARCHIVE}",
@@ -461,6 +515,12 @@ def add_features(frame):
         "npxg90",
         "xa90",
         "xgchain90",
+        "clearances_blocks_interceptions",
+        "recoveries",
+        "tackles",
+        "defensive_contribution",
+        "own_days_rest",
+        "opp_days_rest",
     ]
     for column in numeric:
         frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0)
@@ -473,7 +533,15 @@ def add_features(frame):
     return frame
 
 
-LAGGED_MATCH_STATS = ["minutes", "expected_goals", "expected_assists", "expected_goals_conceded", "bonus"]
+# defensive_contribution is a same-match derived flag (FPL awards bonus points once a player's
+# CBIT/recoveries/tackles cross a position-specific threshold that match) -- using its own-match
+# value to predict that match's own total_points would be the exact same leakage bug bonus had
+# before it was lagged here. Lagging it (and its raw components) to a pre-match rolling average
+# keeps it a genuine "recent involvement" signal instead of a peek at the answer.
+LAGGED_MATCH_STATS = [
+    "minutes", "expected_goals", "expected_assists", "expected_goals_conceded", "bonus",
+    "clearances_blocks_interceptions", "recoveries", "tackles", "defensive_contribution",
+]
 
 
 def add_lagged_match_form(frame, group_col=None):
@@ -506,6 +574,7 @@ def add_lagged_match_form(frame, group_col=None):
 
 def build_training_rows(elements, fixtures, teams, session, team_form_lookup, understat_matches):
     difficulty_lookup = make_fixture_lookup(fixtures)
+    rest_days_lookup = build_rest_days_lookup(fixtures)
     rows = []
     for player in elements:
         position = POSITION_MAP.get(player["element_type"])
@@ -536,6 +605,7 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
             opp_understat_team = UNDERSTAT_TEAM_MAP.get(opponent_name)
             own_form = team_form_lookup.get((own_understat_team, date), (0, 0))
             opp_form = team_form_lookup.get((opp_understat_team, date), (0, 0))
+            own_rest, opp_rest = get_rest_days(rest_days_lookup, fixture_id, was_home)
             lagged = hist_frame.iloc[idx]
             rows.append(
                 {
@@ -555,6 +625,12 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
                     "npxg90": player_stats.get("npxg90", 0),
                     "xa90": player_stats.get("xa90", 0),
                     "xgchain90": player_stats.get("xgchain90", 0),
+                    "clearances_blocks_interceptions": lagged["clearances_blocks_interceptions"],
+                    "recoveries": lagged["recoveries"],
+                    "tackles": lagged["tackles"],
+                    "defensive_contribution": lagged["defensive_contribution"],
+                    "own_days_rest": own_rest,
+                    "opp_days_rest": opp_rest,
                     "position": position,
                     "total_points": match.get("total_points", 0),
                     "date": date,
@@ -563,8 +639,20 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
     return pd.DataFrame(rows)
 
 
+def upcoming_event_numbers(fixtures, count):
+    """The next `count` real gameweek numbers with at least one unfinished fixture anywhere in
+    the league -- computed once for the whole league, not per team. Walking a team's own next-N
+    fixtures independently (the previous approach) silently misaligns "weeks_ahead" across teams
+    the moment any team blanks a gameweek (European/cup clash) or doubles one up (a rearranged
+    fixture): one team's "week 3" would stop meaning the same calendar gameweek as another's."""
+    events = sorted({f["event"] for f in fixtures if not f["finished"] and f.get("event")})
+    return events[:count]
+
+
 def recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches):
     difficulty_lookup = make_fixture_lookup(fixtures)
+    rest_days_lookup = build_rest_days_lookup(fixtures)
+    target_events = upcoming_event_numbers(fixtures, MAX_FUTURE_GAMEWEEKS)
     rows = []
     for player in elements:
         player_stats = understat_matches.get(player["id"], {})
@@ -604,54 +692,86 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
         position = POSITION_MAP.get(player["element_type"])
         playing_time_multiplier = min(1.0, averages.get("minutes", 0) / get_playing_time_denominator(position))
 
-        team_fixtures = [
-            f for f in fixtures
-            if not f["finished"] and player["team"] in (f["team_h"], f["team_a"])
-        ]
-        team_fixtures.sort(key=lambda f: (f.get("event") or 9999, f.get("kickoff_time") or ""))
+        base_row = {
+            "id": player["id"],
+            "web_name": player["web_name"],
+            "team_name": player["team_name"],
+            "position": position,
+            "now_cost": player.get("now_cost", 0),
+            "minutes": averages.get("minutes", 0),
+            "minutes_sd": minutes_sd,
+            "expected_goals": averages.get("expected_goals", 0),
+            "expected_assists": averages.get("expected_assists", 0),
+            "expected_goals_conceded": averages.get("expected_goals_conceded", 0),
+            "bonus": averages.get("bonus", 0),
+            "npxg90": player_stats.get("npxg90", 0),
+            "clearances_blocks_interceptions": averages.get("clearances_blocks_interceptions", 0),
+            "recoveries": averages.get("recoveries", 0),
+            "tackles": averages.get("tackles", 0),
+            "defensive_contribution": averages.get("defensive_contribution", 0),
+            "xa90": player_stats.get("xa90", 0),
+            "xgchain90": player_stats.get("xgchain90", 0),
+            "recent_points_avg": averages.get("total_points", 0),
+            "ownership_pct": float(player.get("selected_by_percent", 0) or 0),
+            "goals_vs_npxg90": actual_goals_per90 - player_stats.get("npxg90", 0),
+            "season_points": season_points,
+            "status": player.get("status", "a"),
+            "chance_of_playing_next_round": chance,
+            "availability_multiplier": availability_multiplier,
+            "playing_time_multiplier": playing_time_multiplier,
+        }
 
-        for weeks_ahead, fixture in enumerate(team_fixtures[:MAX_FUTURE_GAMEWEEKS], start=1):
-            was_home = player["team"] == fixture["team_h"]
-            pair = difficulty_lookup[fixture["id"]]
-            opponent_id = fixture["team_a"] if was_home else fixture["team_h"]
-            opp_understat_team = UNDERSTAT_TEAM_MAP.get(teams.get(opponent_id, ""))
-            # Own form uses this fixture's actual venue; the opponent is necessarily at the
-            # opposite venue in this same match, so their relevant form is the other side's.
-            own_form = current_team_form.get((own_understat_team, was_home), (0, 0))
-            opp_form = current_team_form.get((opp_understat_team, not was_home), (0, 0))
-            row = {
-                "id": player["id"],
-                "web_name": player["web_name"],
-                "weeks_ahead": weeks_ahead,
-                "team_name": player["team_name"],
-                "position": position,
-                "now_cost": player.get("now_cost", 0),
-                "event": fixture.get("event", 0),
-                "was_home": was_home,
-                "difficulty": pair[0] if was_home else pair[1],
-                "minutes": averages.get("minutes", 0),
-                "minutes_sd": minutes_sd,
-                "expected_goals": averages.get("expected_goals", 0),
-                "expected_assists": averages.get("expected_assists", 0),
-                "expected_goals_conceded": averages.get("expected_goals_conceded", 0),
-                "bonus": averages.get("bonus", 0),
-                "team_xg_for_form": own_form[0],
-                "team_xg_against_form": own_form[1],
-                "opp_xg_for_form": opp_form[0],
-                "opp_xg_against_form": opp_form[1],
-                "npxg90": player_stats.get("npxg90", 0),
-                "xa90": player_stats.get("xa90", 0),
-                "xgchain90": player_stats.get("xgchain90", 0),
-                "recent_points_avg": averages.get("total_points", 0),
-                "ownership_pct": float(player.get("selected_by_percent", 0) or 0),
-                "goals_vs_npxg90": actual_goals_per90 - player_stats.get("npxg90", 0),
-                "season_points": season_points,
-                "status": player.get("status", "a"),
-                "chance_of_playing_next_round": chance,
-                "availability_multiplier": availability_multiplier,
-                "playing_time_multiplier": playing_time_multiplier,
-            }
-            rows.append(row)
+        for weeks_ahead, event_number in enumerate(target_events, start=1):
+            team_matches_this_event = [
+                f for f in fixtures
+                if f.get("event") == event_number and player["team"] in (f["team_h"], f["team_a"])
+            ]
+            team_matches_this_event.sort(key=lambda f: f.get("kickoff_time") or "")
+
+            if not team_matches_this_event:
+                # Blank gameweek for this team (postponed for a cup replay, European fixture
+                # rearrangement, etc.) -- emit a zero-prediction placeholder rather than silently
+                # skipping to the next fixture, which is what let weeks_ahead drift out of sync
+                # with the real calendar gameweek in the first place.
+                rows.append({
+                    **base_row, "weeks_ahead": weeks_ahead, "event": event_number,
+                    # was_home/difficulty are placeholders, not real values -- is_blank=True is
+                    # what actually excludes this row from the model (see main()), so these just
+                    # need to be types add_features() can process, not meaningful predictions.
+                    "is_blank": True, "fixture_index": 0, "was_home": False, "difficulty": 0,
+                    "team_xg_for_form": 0, "team_xg_against_form": 0,
+                    "opp_xg_for_form": 0, "opp_xg_against_form": 0,
+                    "own_days_rest": DEFAULT_REST_DAYS, "opp_days_rest": DEFAULT_REST_DAYS,
+                })
+                continue
+
+            for fixture_index, fixture in enumerate(team_matches_this_event):
+                was_home = player["team"] == fixture["team_h"]
+                pair = difficulty_lookup[fixture["id"]]
+                opponent_id = fixture["team_a"] if was_home else fixture["team_h"]
+                opp_understat_team = UNDERSTAT_TEAM_MAP.get(teams.get(opponent_id, ""))
+                # Own form uses this fixture's actual venue; the opponent is necessarily at the
+                # opposite venue in this same match, so their relevant form is the other side's.
+                own_form = current_team_form.get((own_understat_team, was_home), (0, 0))
+                opp_form = current_team_form.get((opp_understat_team, not was_home), (0, 0))
+                own_rest, opp_rest = get_rest_days(rest_days_lookup, fixture["id"], was_home)
+                rows.append({
+                    **base_row,
+                    "weeks_ahead": weeks_ahead,
+                    "event": event_number,
+                    "is_blank": False,
+                    # 0 for the only fixture in a normal gameweek, or 0/1 for a double gameweek's
+                    # two fixtures -- distinguishes them in the UI without disturbing weeks_ahead.
+                    "fixture_index": fixture_index,
+                    "was_home": was_home,
+                    "difficulty": pair[0] if was_home else pair[1],
+                    "team_xg_for_form": own_form[0],
+                    "team_xg_against_form": own_form[1],
+                    "opp_xg_for_form": opp_form[0],
+                    "opp_xg_against_form": opp_form[1],
+                    "own_days_rest": own_rest,
+                    "opp_days_rest": opp_rest,
+                })
         time.sleep(0.05)
     return pd.DataFrame(rows)
 
@@ -691,7 +811,7 @@ def main():
         p["understat_id"]: p for p in get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
     }
 
-    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist = load_prior_season_archive()
+    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup = load_prior_season_archive()
     prior_id_map, prior_unmatched = match_prior_season_players(elements, player_idlist)
     print(f"Matched {len(prior_id_map)} of {len(player_idlist)} {PRIOR_SEASON_ARCHIVE} players to the current squad")
     print(f"  ({len(prior_unmatched)} unmatched -- mostly players who left the Premier League, which is expected).")
@@ -704,6 +824,7 @@ def main():
         prior_team_form_lookup,
         understat_matches,
         prior_per90_by_understat_id,
+        prior_rest_days_lookup,
     )
 
     print("Building training data...")
@@ -749,7 +870,11 @@ def main():
     upcoming["predicted_points"] = 0.0
     upcoming["explanation"] = "[]"
     for position, model in models.items():
-        mask = (upcoming["position"] == position).to_numpy()
+        # Blank-gameweek rows (no fixture at all this week) are excluded here rather than left to
+        # naturally predict ~0 -- their was_home/difficulty are placeholder values, not real
+        # inputs, so running them through the model would just be a meaningless prediction that
+        # happens to often be small, not a genuine "nothing happening" zero.
+        mask = ((upcoming["position"] == position) & (~upcoming["is_blank"])).to_numpy()
         if mask.any():
             X = featured_upcoming.loc[mask, POSITION_FEATURES]
             upcoming.loc[mask, "predicted_points"] = model.predict(X)

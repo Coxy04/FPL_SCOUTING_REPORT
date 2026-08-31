@@ -97,7 +97,7 @@ def main():
     team_matches = add_prematch_team_form(team_matches)
     team_form_lookup = build_team_form_lookup(team_matches)
 
-    merged_gw, difficulty_lookup, team_names, player_idlist = load_prior_season_archive()
+    merged_gw, difficulty_lookup, team_names, player_idlist, rest_days_lookup = load_prior_season_archive()
     elements = build_backtest_elements(merged_gw, player_idlist)
 
     understat_players = get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
@@ -108,7 +108,7 @@ def main():
     id_map = {e: e for e in merged_gw["element"].unique()}
 
     rows = build_prior_season_rows(
-        merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id
+        merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup
     )
     rows = add_features(rows)
 

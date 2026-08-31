@@ -25,6 +25,7 @@ import requests
 from understatapi import UnderstatClient
 
 from fpl_ml_model import (
+    DEFAULT_REST_DAYS,
     POSITION_FEATURES,
     POSITION_MAP,
     PRIOR_SEASON_UNDERSTAT,
@@ -81,6 +82,12 @@ def build_gw1_rows(elements, fixtures, teams, understat_matches, prior_per90_by_
                 "expected_goals_conceded": 0, "bonus": 0,
                 "team_xg_for_form": 0, "team_xg_against_form": 0,
                 "opp_xg_for_form": 0, "opp_xg_against_form": 0,
+                "clearances_blocks_interceptions": 0, "recoveries": 0, "tackles": 0,
+                "defensive_contribution": 0,
+                # Rest days genuinely means something pre-season (the summer break, not fatigue),
+                # so the neutral "typical week" default is the honest value here, not 0 -- 0 would
+                # read as squeezed fixture congestion, which this isn't.
+                "own_days_rest": DEFAULT_REST_DAYS, "opp_days_rest": DEFAULT_REST_DAYS,
                 "npxg90": prior_stats.get("npxg90", 0),
                 "xa90": prior_stats.get("xa90", 0),
                 "xgchain90": prior_stats.get("xgchain90", 0),
@@ -105,11 +112,11 @@ def train_current_models(session, elements, fixtures, teams):
         p["understat_id"]: p for p in get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
     }
 
-    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist = load_prior_season_archive()
+    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup = load_prior_season_archive()
     prior_id_map, _ = match_prior_season_players(elements, player_idlist)
     prior_rows = build_prior_season_rows(
         merged_gw, prior_difficulty_lookup, prior_team_names, prior_id_map,
-        prior_team_form_lookup, understat_matches, prior_per90_by_understat_id,
+        prior_team_form_lookup, understat_matches, prior_per90_by_understat_id, prior_rest_days_lookup,
     )
 
     print("Building training data (same as fpl_ml_model.py)...")

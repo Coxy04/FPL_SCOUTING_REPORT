@@ -97,9 +97,20 @@ def pick_squad(players):
     ]
 
 
+def load_nearest_players(predictions):
+    # A double gameweek gives a player two rows at weeks_ahead == 1 (one per fixture) -- summed
+    # here so their squad-selection value reflects both matches, not just whichever row survives
+    # a naive id-keyed dict build (which would silently drop one fixture's points).
+    nearest = predictions[predictions["weeks_ahead"] == 1]
+    grouped = nearest.groupby(
+        ["id", "web_name", "team_name", "position", "now_cost"], as_index=False
+    )["predicted_points"].sum()
+    return grouped
+
+
 def pick_new_team(event):
     predictions = pd.read_csv(PREDICTIONS_FILE)
-    nearest = predictions[predictions["weeks_ahead"] == 1]
+    nearest = load_nearest_players(predictions)
     players = nearest[["id", "web_name", "team_name", "position", "now_cost", "predicted_points"]].to_dict("records")
 
     squad = pick_squad(players)

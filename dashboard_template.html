@@ -505,7 +505,19 @@ function lowMinutesBadge(p) {
 }
 
 function haPill(p) {
+  if (p.is_blank) return `<span class="ha-pill" title="No fixture this gameweek">–</span>`;
   return `<span class="ha-pill${p.was_home ? " home" : ""}">${p.was_home ? "H" : "A"}</span>`;
+}
+
+// Second (or later) row for a player with a double gameweek -- distinguishes it from a genuinely
+// duplicate-looking row, since the table doesn't otherwise show an opponent name.
+function dgwBadge(p) {
+  if (p.is_blank || !p.fixture_index) return "";
+  return ` <span class="badge-icon" title="Double gameweek — fixture ${p.fixture_index + 1}">2️⃣</span>`;
+}
+function blankBadge(p) {
+  if (!p.is_blank) return "";
+  return ` <span class="badge-icon" title="No fixture this gameweek">🚫</span>`;
 }
 
 function luckCell(p) {
@@ -661,6 +673,9 @@ const FEATURE_LABELS = {
   team_xg_for_form: "Team attacking form", team_xg_against_form: "Team defensive form",
   opp_xg_for_form: "Opponent attacking form", opp_xg_against_form: "Opponent defensive form",
   npxg90: "Non-penalty xG/90 (season)", xa90: "xA/90 (season)", xgchain90: "Buildup involvement (xG chain/90)",
+  clearances_blocks_interceptions: "CBIT (recent)", recoveries: "Recoveries (recent)", tackles: "Tackles (recent)",
+  defensive_contribution: "Defensive contribution threshold (recent)",
+  own_days_rest: "Days since own team's last match", opp_days_rest: "Days since opponent's last match",
 };
 function explanationHtml(p) {
   if (!p.explanation || !p.explanation.length) {
@@ -699,7 +714,10 @@ function renderHorizonOptions() {
 
 function renderFullTable() {
   const isTotal = horizon === "total";
-  let rows = PLAYERS.filter(p => isTotal ? p.weeks_ahead === 1 : p.weeks_ahead === Number(horizon));
+  // Total view wants exactly one row per player (predicted_points_5gw already sums every fixture
+  // across the window) -- without the fixture_index guard, a double gameweek in week 1 would
+  // otherwise surface the same player (and the same total) twice.
+  let rows = PLAYERS.filter(p => isTotal ? (p.weeks_ahead === 1 && p.fixture_index === 0) : p.weeks_ahead === Number(horizon));
   rows = rows.map(p => ({ ...p, _predShown: isTotal ? p.predicted_points_5gw : p.predicted_points }));
   if (filterPos) rows = rows.filter(p => p.position === filterPos);
   if (searchTerm) {
@@ -718,11 +736,11 @@ function renderFullTable() {
 
   const tbody = document.querySelector("#full-table tbody");
   tbody.innerHTML = rows.map(p => {
-    const rowKey = `${p.id}-${p.weeks_ahead}`;
+    const rowKey = `${p.id}-${p.weeks_ahead}-${p.fixture_index}`;
     const expanded = expandedRowKeys.has(rowKey);
     const mainRow = `
     <tr>
-      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}${rotationBadge(p)}${lowMinutesBadge(p)}</td>
+      <td>${esc(p.web_name)}${p.is_gem ? ' <span title="Hidden gem" style="color:var(--gold);">★</span>' : ""}${statusBadge(p)}${rotationBadge(p)}${lowMinutesBadge(p)}${dgwBadge(p)}${blankBadge(p)}</td>
       <td>${esc(p.team_name)}</td>
       <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
       <td>${haPill(p)}</td>
@@ -733,7 +751,7 @@ function renderFullTable() {
       <td class="num">${fmt(p.points_per_million)}</td>
       <td class="num${p.underperformance_gap > 0 ? " gap-positive" : ""}">${p.underperformance_gap > 0 ? "+" : ""}${fmt(p.underperformance_gap)}</td>
       <td class="num">${luckCell(p)}</td>
-      <td class="num">${p.difficulty}</td>
+      <td class="num">${p.is_blank ? "–" : p.difficulty}</td>
       <td><button class="why-btn${expanded ? " active" : ""}" data-row-key="${rowKey}">${expanded ? "Hide" : "Why?"}</button></td>
     </tr>`;
     const expandRow = expanded
@@ -791,8 +809,21 @@ function renderFixtureTicker() {
   tbody.innerHTML = teams.map(team => {
     const cells = [];
     for (let w = 1; w <= weeks; w++) {
-      const rep = PLAYERS.find(p => p.team_name === team && p.weeks_ahead === w);
-      cells.push(`<td>${rep ? difficultyChip(rep.difficulty, rep.was_home) : ""}</td>`);
+      // .filter, not .find -- a double gameweek has two fixture rows for the same team/week, and
+      // silently keeping only the first one used to hide the second fixture from the ticker.
+      const reps = PLAYERS.filter(p => p.team_name === team && p.weeks_ahead === w && p.fixture_index === 0);
+      const rep = reps[0];
+      if (!rep || rep.is_blank) {
+        cells.push(`<td><div class="fdr-chip" style="background:var(--gridline);color:var(--ink-muted);" title="No fixture this gameweek">–</div></td>`);
+        continue;
+      }
+      const isDouble = PLAYERS.some(p => p.team_name === team && p.weeks_ahead === w && p.fixture_index === 1);
+      let chip = difficultyChip(rep.difficulty, rep.was_home);
+      if (isDouble) {
+        const second = PLAYERS.find(p => p.team_name === team && p.weeks_ahead === w && p.fixture_index === 1);
+        chip += difficultyChip(second.difficulty, second.was_home);
+      }
+      cells.push(`<td><div style="display:flex;gap:3px;">${chip}</div></td>`);
     }
     return `<tr><td class="team-cell">${esc(team)}</td>${cells.join("")}</tr>`;
   }).join("");

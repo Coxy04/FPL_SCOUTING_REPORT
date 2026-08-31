@@ -25,8 +25,10 @@ PLAYER_COLUMNS = [
     "expected_goals_conceded", "difficulty", "team_xg_for_form",
     "team_xg_against_form", "opp_xg_for_form", "opp_xg_against_form",
     "npxg90", "xa90", "xgchain90",
+    "clearances_blocks_interceptions", "recoveries", "tackles", "defensive_contribution",
+    "own_days_rest", "opp_days_rest",
     "status", "chance_of_playing_next_round", "playing_time_multiplier",
-    "explanation",
+    "explanation", "is_blank", "fixture_index",
 ]
 
 
