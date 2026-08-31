@@ -237,11 +237,40 @@
   .team-row-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); font-weight: 600; margin: 16px 0 8px; }
   .team-row-label:first-child { margin-top: 0; }
   .team-players { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* Pitch view: one horizontal line per formation row (GK/DEF/MID/FWD), like the real FPL app,
+     instead of one flat wrapped list -- makes the shape of the XI legible at a glance. */
+  .pitch {
+    background: linear-gradient(180deg, #1f6b4a 0%, #1c5f42 100%);
+    border-radius: 14px; padding: 22px 14px; display: flex; flex-direction: column; gap: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .pitch { background: linear-gradient(180deg, #123a29 0%, #0f3123 100%); }
+  }
+  :root[data-theme="dark"] .pitch { background: linear-gradient(180deg, #123a29 0%, #0f3123 100%); }
+  .pitch-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
+
+  .player-card {
+    display: flex; flex-direction: column; align-items: center; gap: 3px;
+    background: var(--surface-raised); border: 1px solid rgba(255,255,255,0.14); border-radius: 10px;
+    padding: 8px 10px; min-width: 88px; box-shadow: var(--shadow); position: relative;
+  }
+  .player-card .pos-pill { position: absolute; top: -8px; left: -8px; }
+  .player-card .name { font-size: 12.5px; font-weight: 600; text-align: center; white-space: nowrap; }
+  .player-card .cost { font-family: "IBM Plex Mono", monospace; color: var(--ink-muted); font-size: 11px; }
+  .player-card .pts { font-family: "IBM Plex Mono", monospace; color: var(--accent); font-size: 13px; font-weight: 700; }
+  .player-card .captain-tag {
+    position: absolute; top: -8px; right: -8px;
+    font-size: 10px; font-weight: 700; background: var(--gold); color: var(--page); border-radius: 999px;
+    width: 17px; height: 17px; display: flex; align-items: center; justify-content: center;
+  }
+
   .team-player {
     display: flex; align-items: center; gap: 8px; background: var(--surface-raised); border: 1px solid var(--border);
     border-radius: 8px; padding: 8px 12px; font-size: 13px; box-shadow: var(--shadow);
   }
-  .team-player.bench { opacity: 0.6; }
+  .team-player.bench { opacity: 0.75; }
+  .team-player .cost { font-family: "IBM Plex Mono", monospace; color: var(--ink-muted); font-size: 12px; }
   .team-player .pts { font-family: "IBM Plex Mono", monospace; color: var(--ink-secondary); font-size: 12px; }
   .team-player .captain-tag {
     font-size: 10px; font-weight: 700; background: var(--gold); color: var(--page); border-radius: 4px; padding: 1px 5px;
@@ -858,12 +887,24 @@ function renderTeam() {
   const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
   const byPos = arr => [...arr].sort((a, b) => posOrder[a.position] - posOrder[b.position] || b.predicted_points - a.predicted_points);
 
-  const playerChip = (p, bench) => `
-    <div class="team-player${bench ? " bench" : ""}">
+  // Pitch card for the Starting XI -- name, price, and predicted points together, like the real
+  // FPL app's squad view, laid out one row per formation line rather than one flat wrapped list.
+  const playerCard = p => `
+    <div class="player-card">
+      <span class="pos-pill pos-${p.position}">${p.position}</span>
+      ${p.is_captain ? '<span class="captain-tag" title="Captain">C</span>' : ""}
+      <span class="name">${esc(p.web_name)}</span>
+      <span class="cost">${fmtCost(p.now_cost)}</span>
+      <span class="pts">${fmt(p.predicted_points)} pts</span>
+    </div>
+  `;
+
+  const benchChip = p => `
+    <div class="team-player bench">
       <span class="pos-pill pos-${p.position}">${p.position}</span>
       <span>${esc(p.web_name)}</span>
-      ${p.is_captain ? '<span class="captain-tag">C</span>' : ""}
-      <span class="pts">${fmt(p.predicted_points)}</span>
+      <span class="cost">${fmtCost(p.now_cost)}</span>
+      <span class="pts">${fmt(p.predicted_points)} pts</span>
     </div>
   `;
 
@@ -903,12 +944,21 @@ function renderTeam() {
     </div>
   ` : "";
 
+  const pitchHtml = `
+    <div class="pitch">
+      ${["GK", "DEF", "MID", "FWD"].map(pos => {
+        const rowPlayers = starters.filter(p => p.position === pos).sort((a, b) => b.predicted_points - a.predicted_points);
+        return rowPlayers.length ? `<div class="pitch-row">${rowPlayers.map(playerCard).join("")}</div>` : "";
+      }).join("")}
+    </div>
+  `;
+
   content.innerHTML = `
     ${summaryHtml}
     <div class="team-row-label">Starting XI</div>
-    <div class="team-players">${byPos(starters).map(p => playerChip(p, false)).join("")}</div>
+    ${pitchHtml}
     <div class="team-row-label">Bench</div>
-    <div class="team-players">${byPos(bench).map(p => playerChip(p, true)).join("")}</div>
+    <div class="team-players">${byPos(bench).map(benchChip).join("")}</div>
     ${historyHtml}
   `;
 }
