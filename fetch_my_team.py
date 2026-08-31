@@ -36,6 +36,7 @@ MY_TEAM_ID = 4340534
 PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 OUTPUT_FILE = Path("my_fpl_team.json")
 TRANSFER_OPTIONS = [1, 2]
+TOP_N_OPTIONS = 3
 # A single gameweek's prediction is noisy for a decision that locks in for several weeks (one
 # unlucky fixture could tip a transfer call either way); 5 weeks starts trusting fixture-difficulty
 # ratings that far out more than they deserve. 3 is the middle ground -- long enough to smooth out
@@ -76,12 +77,17 @@ def pick_best_lineup(players):
     return [{**by_id[i], "is_starter": i in starter_ids, "is_captain": i == captain_id} for i in by_id]
 
 
-def pick_with_transfers(current_ids, current_value, bank, all_players, max_transfers):
+def pick_with_transfers(current_ids, current_value, bank, all_players, max_transfers, exclude_combos=()):
     """Same MILP family as pick_squad, plus one extra piece: at most `max_transfers` players in
     the new squad may be ones not already owned. Budget is bank + current squad value (selling any
     owned player refunds its current listed price) rather than a flat budget, so keeping a player
     costs nothing and swapping X for Y costs exactly Y's price minus X's against the bank -- this
-    is what correctly prices "free to keep, real cost only on genuine changes."""
+    is what correctly prices "free to keep, real cost only on genuine changes."
+
+    exclude_combos: previously-found sets of newly-bought player ids -- each one gets a cutting-
+    plane constraint ("don't buy ALL of these same new players again") so a repeated call is
+    forced to surface a genuinely different combination instead of re-finding the same optimum,
+    which is how pick_top_transfer_scenarios below builds a ranked list of distinct options."""
     prob = pulp.LpProblem("fpl_transfers", pulp.LpMaximize)
     squad = {p["id"]: pulp.LpVariable(f"squad_{p['id']}", cat="Binary") for p in all_players}
     starter = {p["id"]: pulp.LpVariable(f"start_{p['id']}", cat="Binary") for p in all_players}
@@ -113,15 +119,40 @@ def pick_with_transfers(current_ids, current_value, bank, all_players, max_trans
         prob += pulp.lpSum(squad[i] for i in squad if by_id[i]["team_name"] == team_name) <= MAX_PER_CLUB
 
     prob += new_players_in <= max_transfers
+    for combo in exclude_combos:
+        prob += pulp.lpSum(squad[i] for i in combo) <= len(combo) - 1
 
     status = prob.solve(pulp.PULP_CBC_CMD(msg=0))
     if pulp.LpStatus[status] != "Optimal":
-        raise RuntimeError(f"Transfer optimization failed: {pulp.LpStatus[status]}")
+        return None
 
     squad_ids = [i for i in squad if squad[i].value() == 1]
     starter_ids = {i for i in starter if starter[i].value() == 1}
     captain_id = max(starter_ids, key=lambda i: by_id[i]["predicted_points"])
     return [{**by_id[i], "is_starter": i in starter_ids, "is_captain": i == captain_id} for i in squad_ids]
+
+
+def pick_top_transfer_scenarios(current_ids, current_value, bank, all_players, max_transfers, current_total, top_n=3):
+    """The single best combination of transfers only shows you one option -- this repeats the
+    search, excluding each previously-found combination of new players, to surface up to `top_n`
+    genuinely distinct alternatives ranked by predicted gain. Stops early (rather than padding
+    with weaker filler) once a candidate no longer actually beats the current squad, or once no
+    further distinct feasible combination exists at all."""
+    scenarios = []
+    exclude_combos = []
+    for _ in range(top_n):
+        squad = pick_with_transfers(current_ids, current_value, bank, all_players, max_transfers, exclude_combos)
+        if squad is None:
+            break
+        total = starting_total(squad)
+        if total <= current_total:
+            break
+        new_ids = frozenset(p["id"] for p in squad if p["id"] not in current_ids)
+        if not new_ids:
+            break
+        scenarios.append(squad)
+        exclude_combos.append(new_ids)
+    return scenarios
 
 
 def starting_total(squad):
@@ -172,18 +203,21 @@ def main():
 
     transfer_scenarios = {}
     for n in TRANSFER_OPTIONS:
-        squad = pick_with_transfers(current_ids, current_value, bank_raw, all_players, n)
-        total = starting_total(squad)
-        new_ids = {p["id"] for p in squad}
-        transferred_out = sorted((by_id[pid] for pid in current_ids if pid not in new_ids), key=lambda p: p["position"])
-        transferred_in = sorted((p for p in squad if p["id"] not in current_ids), key=lambda p: p["position"])
-        transfer_scenarios[str(n)] = {
-            "squad": squad,
-            "predicted_total": total,
-            "rating_pct": round(100 * total / top_total, 1) if top_total else None,
-            "transfers_out": transferred_out,
-            "transfers_in": transferred_in,
-        }
+        ranked = pick_top_transfer_scenarios(current_ids, current_value, bank_raw, all_players, n, current_total, TOP_N_OPTIONS)
+        scenario_list = []
+        for squad in ranked:
+            total = starting_total(squad)
+            new_ids = {p["id"] for p in squad}
+            transferred_out = sorted((by_id[pid] for pid in current_ids if pid not in new_ids), key=lambda p: p["position"])
+            transferred_in = sorted((p for p in squad if p["id"] not in current_ids), key=lambda p: p["position"])
+            scenario_list.append({
+                "squad": squad,
+                "predicted_total": total,
+                "rating_pct": round(100 * total / top_total, 1) if top_total else None,
+                "transfers_out": transferred_out,
+                "transfers_in": transferred_in,
+            })
+        transfer_scenarios[str(n)] = scenario_list
 
     # Deliberately NOT saving manager_name/team_name into the output file -- this JSON gets baked
     # into a public GitHub Pages dashboard, and a real name in a public git history is effectively
@@ -207,12 +241,14 @@ def main():
     print(f"{manager_name}'s team \"{entry.get('name')}\" (GW{event}, {HORIZON_GAMEWEEKS}-GW outlook): "
           f"{current_total} pts predicted ({rating_pct}% of the model's own best-possible {top_total}-pt squad)")
     for n in TRANSFER_OPTIONS:
-        s = transfer_scenarios[str(n)]
-        if s["transfers_out"]:
+        options = transfer_scenarios[str(n)]
+        if not options:
+            print(f"  With {n} transfer(s): no changes beat your current squad")
+            continue
+        print(f"  With {n} transfer(s), top {len(options)} option(s):")
+        for rank, s in enumerate(options, start=1):
             moves = ", ".join(f"{o['web_name']} -> {i['web_name']}" for o, i in zip(s["transfers_out"], s["transfers_in"]))
-        else:
-            moves = "no changes beat your current squad"
-        print(f"  With {n} transfer(s): {s['predicted_total']} pts ({s['rating_pct']}%) -- {moves}")
+            print(f"    {rank}. {s['predicted_total']} pts ({s['rating_pct']}%) -- {moves}")
     print(f"Saved {OUTPUT_FILE}")
 
 

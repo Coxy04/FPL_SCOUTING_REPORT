@@ -336,6 +336,8 @@
   .transfer-in { color: var(--good); }
   .transfer-arrow { color: var(--ink-muted); }
   .transfer-row .cost { font-family: "IBM Plex Mono", monospace; font-weight: 400; color: var(--ink-muted); font-size: 12px; }
+  .transfer-option-head { font-size: 12.5px; font-weight: 700; color: var(--ink-secondary); margin: 4px 0; }
+  .transfer-option-ranked { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 
   /* fixture ticker */
   .ticker-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border); border-radius: 10px; }
@@ -1036,26 +1038,33 @@ function renderMyTeam() {
   `;
 
   const transferCard = n => {
-    const s = MY_TEAM.transfer_scenarios[n];
-    if (!s || !s.transfers_out.length) {
+    const options = MY_TEAM.transfer_scenarios[n] || [];
+    if (!options.length) {
       return `<div class="card"><h3>${n} transfer${n > 1 ? "s" : ""}</h3><div class="exp-empty">No change beats your current squad.</div></div>`;
     }
-    const moves = s.transfers_out.map((out, i) => {
-      const inP = s.transfers_in[i];
+    const optionsHtml = options.map((s, idx) => {
+      const moves = s.transfers_out.map((out, i) => {
+        const inP = s.transfers_in[i];
+        return `
+          <div class="transfer-row">
+            <span class="transfer-out">${esc(out.web_name)} <span class="cost">${fmtCost(out.now_cost)}</span></span>
+            <span class="transfer-arrow">→</span>
+            <span class="transfer-in">${esc(inP.web_name)} <span class="cost">${fmtCost(inP.now_cost)}</span></span>
+          </div>
+        `;
+      }).join("");
+      const gain = (s.predicted_total - MY_TEAM.current_predicted_total).toFixed(1);
       return `
-        <div class="transfer-row">
-          <span class="transfer-out">${esc(out.web_name)} <span class="cost">${fmtCost(out.now_cost)}</span></span>
-          <span class="transfer-arrow">→</span>
-          <span class="transfer-in">${esc(inP.web_name)} <span class="cost">${fmtCost(inP.now_cost)}</span></span>
+        <div class="transfer-option${idx > 0 ? " transfer-option-ranked" : ""}">
+          <div class="transfer-option-head">#${idx + 1} -- ${fmt(s.predicted_total)} pts (${fmt(s.rating_pct, 1)}%) <span class="gap-positive">+${gain}</span></div>
+          ${moves}
         </div>
       `;
     }).join("");
-    const gain = (s.predicted_total - MY_TEAM.current_predicted_total).toFixed(1);
     return `
       <div class="card">
-        <h3>${n} transfer${n > 1 ? "s" : ""} -- ${fmt(s.predicted_total)} pts over ${horizon} GW (${fmt(s.rating_pct, 1)}%)</h3>
-        ${moves}
-        <div class="exp-intro" style="margin-top:8px;">+${gain} pts over your current squad</div>
+        <h3>${n} transfer${n > 1 ? "s" : ""} -- top ${options.length} option${options.length > 1 ? "s" : ""}, ${horizon} GW outlook</h3>
+        ${optionsHtml}
       </div>
     `;
   };
