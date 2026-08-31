@@ -240,21 +240,22 @@
 
   /* Pitch view: one horizontal line per formation row (GK/DEF/MID/FWD), like the real FPL app,
      instead of one flat wrapped list -- makes the shape of the XI legible at a glance. */
-  /* Pitch markings drawn once as an SVG (halfway line, center circle, both penalty boxes) and
-     layered under a mown-stripe effect and the base green -- three CSS background layers instead
-     of an external image asset. --pitch-base / --pitch-base-2 are overridden per theme below so
-     the markings SVG itself never needs to change. */
-  :root { --pitch-base: #1f6b4a; --pitch-base-2: #1c5f42; }
+  /* Pitch markings drawn once as an SVG (goal frame, penalty/six-yard box, corner arcs, halfway
+     line, center circle) and layered over a bold mown-stripe effect -- three CSS background
+     layers instead of an external image asset. --pitch-stripe-a/-b are overridden per theme below
+     so the markings SVG itself never needs to change. A trapezoid clip-path (narrower at the
+     goal end) fakes the same behind-the-goal perspective the real FPL app's pitch graphic uses. */
+  :root { --pitch-stripe-a: #2d8159; --pitch-stripe-b: #256b4a; }
   @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) { --pitch-base: #123a29; --pitch-base-2: #0f3123; }
+    :root:not([data-theme="light"]) { --pitch-stripe-a: #1c4a34; --pitch-stripe-b: #163d2b; }
   }
-  :root[data-theme="dark"] { --pitch-base: #123a29; --pitch-base-2: #0f3123; }
+  :root[data-theme="dark"] { --pitch-stripe-a: #1c4a34; --pitch-stripe-b: #163d2b; }
   .pitch {
     background:
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 300 460'%3E%3Cg fill='none' stroke='rgba(255,255,255,0.5)' stroke-width='2'%3E%3Crect x='8' y='8' width='284' height='444'/%3E%3Cline x1='8' y1='230' x2='292' y2='230'/%3E%3Ccircle cx='150' cy='230' r='38'/%3E%3Ccircle cx='150' cy='230' r='2.5' fill='rgba(255,255,255,0.5)' stroke='none'/%3E%3Crect x='68' y='8' width='164' height='58'/%3E%3Crect x='115' y='8' width='70' height='22'/%3E%3Crect x='68' y='394' width='164' height='58'/%3E%3Crect x='115' y='430' width='70' height='22'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / 92% 96%,
-      repeating-linear-gradient(180deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 42px, rgba(0,0,0,0.05) 42px, rgba(0,0,0,0.05) 84px),
-      linear-gradient(180deg, var(--pitch-base) 0%, var(--pitch-base-2) 100%);
-    border-radius: 14px; padding: 22px 14px; display: flex; flex-direction: column; gap: 14px;
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 300 460'%3E%3Cg fill='none' stroke='rgba(255,255,255,0.6)' stroke-width='2'%3E%3Crect x='8' y='8' width='284' height='444'/%3E%3Cpath d='M8 24 A16 16 0 0 1 24 8'/%3E%3Cpath d='M276 8 A16 16 0 0 1 292 24'/%3E%3Crect x='68' y='8' width='164' height='58'/%3E%3Crect x='115' y='8' width='70' height='22'/%3E%3Cpath d='M115 66 A35 35 0 0 1 185 66'/%3E%3Cline x1='8' y1='230' x2='292' y2='230'/%3E%3Ccircle cx='150' cy='230' r='38'/%3E%3C/g%3E%3Ccircle cx='150' cy='230' r='2.5' fill='rgba(255,255,255,0.6)'/%3E%3Crect x='128' y='-6' width='44' height='15' fill='rgba(255,255,255,0.25)' stroke='rgba(255,255,255,0.75)' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat top center / 96% 98%,
+      repeating-linear-gradient(180deg, var(--pitch-stripe-a) 0px, var(--pitch-stripe-a) 42px, var(--pitch-stripe-b) 42px, var(--pitch-stripe-b) 84px);
+    clip-path: polygon(6% 0%, 94% 0%, 100% 100%, 0% 100%);
+    padding: 30px 14px 22px; display: flex; flex-direction: column; gap: 14px;
   }
   .pitch-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 
@@ -977,7 +978,7 @@ function renderTeam() {
 
   const pitchHtml = `
     <div class="pitch">
-      ${["FWD", "MID", "DEF", "GK"].map(pos => {
+      ${["GK", "DEF", "MID", "FWD"].map(pos => {
         const rowPlayers = starters.filter(p => p.position === pos).sort((a, b) => b.predicted_points - a.predicted_points);
         return rowPlayers.length ? `<div class="pitch-row">${rowPlayers.map(playerCard).join("")}</div>` : "";
       }).join("")}
