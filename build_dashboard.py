@@ -17,7 +17,8 @@ TEAM_HISTORY_FILE = Path("fpl_ml_team_history.jsonl")
 OUTPUT_FILE = Path("docs/index.html")
 
 PLAYER_COLUMNS = [
-    "id", "web_name", "team_name", "position", "now_cost", "event", "weeks_ahead", "was_home",
+    "id", "web_name", "team_name", "team_code", "position", "now_cost", "event", "weeks_ahead", "was_home",
+    "opponent_name", "opponent_short_name", "opponent_code",
     "predicted_points", "predicted_points_low", "predicted_points_high",
     "predicted_points_5gw", "points_per_million",
     "season_points", "recent_points_avg",

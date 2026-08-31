@@ -679,10 +679,12 @@ def upcoming_event_numbers(fixtures, count):
     return events[:count]
 
 
-def recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches):
+def recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches, team_codes=None, team_short_names=None):
     difficulty_lookup = make_fixture_lookup(fixtures)
     rest_days_lookup = build_rest_days_lookup(fixtures)
     target_events = upcoming_event_numbers(fixtures, MAX_FUTURE_GAMEWEEKS)
+    team_codes = team_codes or {}
+    team_short_names = team_short_names or {}
     rows = []
     for player in elements:
         player_stats = understat_matches.get(player["id"], {})
@@ -726,6 +728,7 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             "id": player["id"],
             "web_name": player["web_name"],
             "team_name": player["team_name"],
+            "team_code": team_codes.get(player["team"]),
             "position": position,
             "now_cost": player.get("now_cost", 0),
             "minutes": averages.get("minutes", 0),
@@ -769,6 +772,7 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
                     # what actually excludes this row from the model (see main()), so these just
                     # need to be types add_features() can process, not meaningful predictions.
                     "is_blank": True, "fixture_index": 0, "was_home": False, "difficulty": 0,
+                    "opponent_name": None, "opponent_short_name": None, "opponent_code": None,
                     "team_xg_for_form": 0, "team_xg_against_form": 0,
                     "opp_xg_for_form": 0, "opp_xg_against_form": 0,
                     "own_days_rest": DEFAULT_REST_DAYS, "opp_days_rest": DEFAULT_REST_DAYS,
@@ -795,6 +799,9 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
                     "fixture_index": fixture_index,
                     "was_home": was_home,
                     "difficulty": pair[0] if was_home else pair[1],
+                    "opponent_name": teams.get(opponent_id, ""),
+                    "opponent_short_name": team_short_names.get(opponent_id, ""),
+                    "opponent_code": team_codes.get(opponent_id),
                     "team_xg_for_form": own_form[0],
                     "team_xg_against_form": own_form[1],
                     "opp_xg_for_form": opp_form[0],
@@ -812,6 +819,8 @@ def main():
     bootstrap = get_json(session, "bootstrap-static/")
     fixtures = get_json(session, "fixtures/")
     teams = {team["id"]: team["name"] for team in bootstrap["teams"]}
+    team_codes = {team["id"]: team["code"] for team in bootstrap["teams"]}
+    team_short_names = {team["id"]: team["short_name"] for team in bootstrap["teams"]}
     elements = []
     for player in bootstrap["elements"]:
         player = player.copy()
@@ -902,7 +911,7 @@ def main():
     importance.to_csv("fpl_ml_feature_importance.csv", index=False)
 
     print("\nPredicting upcoming fixtures...")
-    upcoming = recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches)
+    upcoming = recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches, team_codes, team_short_names)
     featured_upcoming = add_features(upcoming)
     upcoming["predicted_points"] = 0.0
     upcoming["predicted_points_low"] = 0.0

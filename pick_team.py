@@ -97,35 +97,37 @@ def pick_squad(players):
     ]
 
 
+DISPLAY_COLUMNS = ["team_code", "opponent_name", "opponent_short_name", "opponent_code", "was_home", "difficulty"]
+
+
 def load_nearest_players(predictions):
-    # A double gameweek gives a player two rows at weeks_ahead == 1 (one per fixture) -- summed
-    # here so their squad-selection value reflects both matches, not just whichever row survives
-    # a naive id-keyed dict build (which would silently drop one fixture's points).
+    # A double gameweek gives a player two rows at weeks_ahead == 1 (one per fixture) -- predicted
+    # points are summed across both so squad selection reflects the full week's value, while the
+    # display-only fields (shirt, next opponent) just take the first fixture's, since a compact
+    # card can only show one game.
     nearest = predictions[predictions["weeks_ahead"] == 1]
+    agg = {"predicted_points": "sum", **{c: "first" for c in DISPLAY_COLUMNS}}
     grouped = nearest.groupby(
         ["id", "web_name", "team_name", "position", "now_cost"], as_index=False
-    )["predicted_points"].sum()
+    ).agg(agg)
     return grouped
 
 
-def get_team_code_lookup(session):
-    # FPL's own shirt icons are keyed by this per-club "code" (not the team id) -- fetched fresh
-    # here so the dashboard can render the real club shirt per player instead of a generic pill.
-    bootstrap = session.get(f"{BASE_URL}/bootstrap-static/", timeout=30).json()
-    return {t["name"]: t["code"] for t in bootstrap["teams"]}
-
-
-def pick_new_team(event, session):
+def pick_new_team(event):
     predictions = pd.read_csv(PREDICTIONS_FILE)
     nearest = load_nearest_players(predictions)
-    team_code_lookup = get_team_code_lookup(session)
-    nearest = nearest.copy()
-    nearest["team_code"] = nearest["team_name"].map(team_code_lookup)
-    players = nearest[["id", "web_name", "team_name", "team_code", "position", "now_cost", "predicted_points"]].to_dict("records")
+    columns = ["id", "web_name", "team_name", "position", "now_cost", "predicted_points"] + DISPLAY_COLUMNS
+    players = nearest[columns].to_dict("records")
     for p in players:
-        # pandas leaves an unmatched team_code as NaN (a float), not a clean int/None -- normalize
-        # so json.dumps in save_history doesn't choke and the dashboard gets a real int or null.
-        p["team_code"] = int(p["team_code"]) if pd.notna(p["team_code"]) else None
+        # A player with no weeks_ahead==1 row at all (shouldn't normally happen, but a squad
+        # player outside the model's tracked pool) leaves these as NaN -- normalize so
+        # json.dumps in save_history doesn't choke and the dashboard gets a real value or null.
+        for key in ("team_code", "opponent_code"):
+            p[key] = int(p[key]) if pd.notna(p[key]) else None
+        for key in ("opponent_name", "opponent_short_name"):
+            p[key] = p[key] if pd.notna(p[key]) else None
+        p["was_home"] = bool(p["was_home"]) if pd.notna(p["was_home"]) else None
+        p["difficulty"] = int(p["difficulty"]) if pd.notna(p["difficulty"]) else None
 
     squad = pick_squad(players)
     predicted_total = sum(
@@ -189,7 +191,7 @@ def main():
         if already_picked:
             print(f"Already have a pick for GW{upcoming_event}, skipping.")
         else:
-            entry = pick_new_team(upcoming_event, session)
+            entry = pick_new_team(upcoming_event)
             history.append(entry)
             starters = [p for p in entry["squad"] if p["is_starter"]]
             captain = next(p for p in starters if p["is_captain"])

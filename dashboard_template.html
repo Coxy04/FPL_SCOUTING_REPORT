@@ -240,14 +240,22 @@
 
   /* Pitch view: one horizontal line per formation row (GK/DEF/MID/FWD), like the real FPL app,
      instead of one flat wrapped list -- makes the shape of the XI legible at a glance. */
+  /* Pitch markings drawn once as an SVG (halfway line, center circle, both penalty boxes) and
+     layered under a mown-stripe effect and the base green -- three CSS background layers instead
+     of an external image asset. --pitch-base / --pitch-base-2 are overridden per theme below so
+     the markings SVG itself never needs to change. */
+  :root { --pitch-base: #1f6b4a; --pitch-base-2: #1c5f42; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --pitch-base: #123a29; --pitch-base-2: #0f3123; }
+  }
+  :root[data-theme="dark"] { --pitch-base: #123a29; --pitch-base-2: #0f3123; }
   .pitch {
-    background: linear-gradient(180deg, #1f6b4a 0%, #1c5f42 100%);
+    background:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 300 460'%3E%3Cg fill='none' stroke='rgba(255,255,255,0.5)' stroke-width='2'%3E%3Crect x='8' y='8' width='284' height='444'/%3E%3Cline x1='8' y1='230' x2='292' y2='230'/%3E%3Ccircle cx='150' cy='230' r='38'/%3E%3Ccircle cx='150' cy='230' r='2.5' fill='rgba(255,255,255,0.5)' stroke='none'/%3E%3Crect x='68' y='8' width='164' height='58'/%3E%3Crect x='115' y='8' width='70' height='22'/%3E%3Crect x='68' y='394' width='164' height='58'/%3E%3Crect x='115' y='430' width='70' height='22'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / 92% 96%,
+      repeating-linear-gradient(180deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 42px, rgba(0,0,0,0.05) 42px, rgba(0,0,0,0.05) 84px),
+      linear-gradient(180deg, var(--pitch-base) 0%, var(--pitch-base-2) 100%);
     border-radius: 14px; padding: 22px 14px; display: flex; flex-direction: column; gap: 14px;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .pitch { background: linear-gradient(180deg, #123a29 0%, #0f3123 100%); }
-  }
-  :root[data-theme="dark"] .pitch { background: linear-gradient(180deg, #123a29 0%, #0f3123 100%); }
   .pitch-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
 
   .player-card {
@@ -260,6 +268,10 @@
   .player-card .name { font-size: 12.5px; font-weight: 600; text-align: center; white-space: nowrap; }
   .player-card .cost { font-family: "IBM Plex Mono", monospace; color: var(--ink-muted); font-size: 11px; }
   .player-card .pts { font-family: "IBM Plex Mono", monospace; color: var(--accent); font-size: 13px; font-weight: 700; }
+  .opp-tag {
+    font-size: 9.5px; font-weight: 700; color: #fff; padding: 1px 6px; border-radius: 4px;
+    letter-spacing: 0.02em; white-space: nowrap;
+  }
   .player-card .captain-tag {
     position: absolute; top: -8px; right: -8px;
     font-size: 10px; font-weight: 700; background: var(--gold); color: var(--page); border-radius: 999px;
@@ -895,6 +907,13 @@ function renderTeam() {
   // tracked (e.g. the GW1 retrospective pick) won't have it, so this falls back to the plain
   // position pill rather than a broken image.
   const shirtUrl = code => `https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_${code}-110.png`;
+  // Older history entries picked before opponent tracking was added won't have opponent_short_name.
+  const opponentTag = p => {
+    if (!p.opponent_short_name) return "";
+    const color = p.difficulty != null ? `var(--diff-${p.difficulty})` : "var(--ink-muted)";
+    const venue = p.was_home ? "H" : "A";
+    return `<span class="opp-tag" style="background:${color}" title="Next opponent">${esc(p.opponent_short_name)} (${venue})</span>`;
+  };
   const playerCard = p => `
     <div class="player-card">
       <span class="pos-pill pos-${p.position}">${p.position}</span>
@@ -903,6 +922,7 @@ function renderTeam() {
         ? `<img class="shirt" src="${shirtUrl(p.team_code)}" alt="${esc(p.team_name)} shirt" loading="lazy" />`
         : ""}
       <span class="name">${esc(p.web_name)}</span>
+      ${opponentTag(p)}
       <span class="cost">${fmtCost(p.now_cost)}</span>
       <span class="pts">${fmt(p.predicted_points)} pts</span>
     </div>
@@ -913,6 +933,7 @@ function renderTeam() {
       <span class="pos-pill pos-${p.position}">${p.position}</span>
       ${p.team_code ? `<img src="${shirtUrl(p.team_code)}" alt="${esc(p.team_name)} shirt" loading="lazy" style="width:20px;height:auto;" />` : ""}
       <span>${esc(p.web_name)}</span>
+      ${opponentTag(p)}
       <span class="cost">${fmtCost(p.now_cost)}</span>
       <span class="pts">${fmt(p.predicted_points)} pts</span>
     </div>
@@ -956,7 +977,7 @@ function renderTeam() {
 
   const pitchHtml = `
     <div class="pitch">
-      ${["GK", "DEF", "MID", "FWD"].map(pos => {
+      ${["FWD", "MID", "DEF", "GK"].map(pos => {
         const rowPlayers = starters.filter(p => p.position === pos).sort((a, b) => b.predicted_points - a.predicted_points);
         return rowPlayers.length ? `<div class="pitch-row">${rowPlayers.map(playerCard).join("")}</div>` : "";
       }).join("")}
