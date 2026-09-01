@@ -53,6 +53,16 @@ def build():
     feature_importance = pd.read_csv(FEATURE_IMPORTANCE_FILE)
     meta = json.loads(META_FILE.read_text())
 
+    # fpl_ml_model.py refuses to touch predictions.csv while the gameweek deadline lock is active
+    # (see get_target_event), which can leave it frozen at an older schema for days at a time --
+    # a genuine new column added here while that lock is active shouldn't hard-crash the rest of
+    # the pipeline against otherwise-perfectly-usable frozen data. Missing columns just read as 0
+    # (or "[]" for the JSON explanation column, via the existing try/except below) until the next
+    # real refresh catches up.
+    for column in PLAYER_COLUMNS:
+        if column not in predictions.columns:
+            predictions[column] = 0
+
     players = round_numeric(predictions[PLAYER_COLUMNS].to_dict("records"))
     gem_ids = set(gems["id"].tolist())
     for player in players:

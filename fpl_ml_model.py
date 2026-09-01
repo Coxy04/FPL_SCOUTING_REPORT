@@ -744,12 +744,18 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
 
 
 def upcoming_event_numbers(fixtures, count):
-    """The next `count` real gameweek numbers with at least one unfinished fixture anywhere in
-    the league -- computed once for the whole league, not per team. Walking a team's own next-N
+    """The next `count` real gameweek numbers with at least one fixture that hasn't finished
+    playing yet -- computed once for the whole league, not per team. Walking a team's own next-N
     fixtures independently (the previous approach) silently misaligns "weeks_ahead" across teams
     the moment any team blanks a gameweek (European/cup clash) or doubles one up (a rearranged
-    fixture): one team's "week 3" would stop meaning the same calendar gameweek as another's."""
-    events = sorted({f["event"] for f in fixtures if not f["finished"] and f.get("event")})
+    fixture): one team's "week 3" would stop meaning the same calendar gameweek as another's.
+
+    Uses finished_provisional, not finished -- same reasoning as get_target_event: the official
+    finished flag lags actual full-time by up to a day or more (FPL manually confirming bonus
+    points), so using it here would keep treating an already-played gameweek as "upcoming" even
+    after get_target_event has already unlocked and moved on to the next one, anchoring
+    weeks_ahead=1 to the wrong (backwards-looking) gameweek."""
+    events = sorted({f["event"] for f in fixtures if not f["finished_provisional"] and f.get("event")})
     return events[:count]
 
 
@@ -890,17 +896,31 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
     return pd.DataFrame(rows)
 
 
-def get_target_event(events):
+def get_target_event(events, fixtures):
     """The gameweek fresh predictions should target -- the next one whose transfer deadline
     hasn't passed yet. Returns None if we're currently mid-gameweek (deadline passed, but the
-    gameweek's matches aren't all finished): predictions for that gameweek aren't actionable any
-    more (the deadline's gone, no team change can use them), and regenerating them from FPL's own
-    API mid-gameweek is unreliable -- element-summary pre-creates a zeroed placeholder row for a
-    player's current fixture before it's even kicked off, which would corrupt recent-form
-    averages for anyone whose match hasn't happened yet. Simplest fix: don't predict into that
-    window at all -- hold whatever was generated before the deadline until the gameweek finishes."""
+    gameweek's own fixtures haven't all finished playing yet): predictions for that gameweek
+    aren't actionable any more (the deadline's gone, no team change can use them), and
+    regenerating them from FPL's own API mid-gameweek is unreliable -- element-summary pre-creates
+    a zeroed placeholder row for a player's current fixture before it's even kicked off, which
+    would corrupt recent-form averages for anyone whose match hasn't happened yet.
+
+    Uses each fixture's own finished_provisional, not the event-level finished/data_checked flags
+    -- those only flip once FPL has manually confirmed final bonus points, which can lag actual
+    full-time by a day or more. finished_provisional flips the moment a match ends, which is what
+    actually matters here: whether real data exists yet, not whether bonus points are finalized
+    (a still-provisional bonus point is a minor, self-correcting noise source next time this runs,
+    nothing like the zeroed-row corruption an unplayed fixture causes)."""
+    fixtures_by_event = {}
+    for fixture in fixtures:
+        event_id = fixture.get("event")
+        if event_id is not None:
+            fixtures_by_event.setdefault(event_id, []).append(fixture)
+
     for event in sorted(events, key=lambda e: e["id"]):
-        if event["finished"]:
+        event_fixtures = fixtures_by_event.get(event["id"], [])
+        all_played = bool(event_fixtures) and all(f.get("finished_provisional") for f in event_fixtures)
+        if all_played:
             continue
         deadline = datetime.fromisoformat(event["deadline_time"].replace("Z", "+00:00"))
         return event["id"] if datetime.now(timezone.utc) < deadline else None
@@ -911,19 +931,19 @@ def main():
     print("Loading FPL data...")
     session = requests.Session()
     bootstrap = get_json(session, "bootstrap-static/")
-    target_event = get_target_event(bootstrap["events"])
+    fixtures = get_json(session, "fixtures/")
+    target_event = get_target_event(bootstrap["events"], fixtures)
     if target_event is None:
         print(
-            "The current gameweek's deadline has passed but it hasn't finished yet -- "
-            "predictions would only cover a gameweek you can no longer change your team for, "
-            "and FPL's own API returns zeroed placeholder data for fixtures that haven't been "
-            "played yet mid-gameweek, which corrupts recent-form averages if pulled now. "
-            "Skipping this refresh entirely -- nothing is touched. Re-run once the gameweek "
-            "finishes (or before the next deadline, whichever comes first)."
+            "The current gameweek's deadline has passed but its fixtures haven't all finished "
+            "playing yet -- predictions would only cover a gameweek you can no longer change "
+            "your team for, and FPL's own API returns zeroed placeholder data for fixtures that "
+            "haven't been played yet mid-gameweek, which corrupts recent-form averages if pulled "
+            "now. Skipping this refresh entirely -- nothing is touched. Re-run once the "
+            "gameweek's matches finish (or before the next deadline, whichever comes first)."
         )
         return
     print(f"Targeting GW{target_event} (deadline not yet passed).")
-    fixtures = get_json(session, "fixtures/")
     teams = {team["id"]: team["name"] for team in bootstrap["teams"]}
     team_codes = {team["id"]: team["code"] for team in bootstrap["teams"]}
     team_short_names = {team["id"]: team["short_name"] for team in bootstrap["teams"]}
