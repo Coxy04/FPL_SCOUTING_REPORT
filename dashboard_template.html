@@ -1039,15 +1039,15 @@ function renderMyTeam() {
 
   const horizon = MY_TEAM.horizon_gameweeks || 1;
   const freeTransfers = MY_TEAM.free_transfers ?? 1;
-  intro.textContent = `Your real FPL squad, pulled from the FPL API, rated over the next ${horizon} gameweeks as a percentage of the model's own best-possible squad for the same budget (see "Model's Benchmark Pick" below, which is scored one gameweek at a time instead) -- plus a transfer plan built around your actual ${freeTransfers} free transfer(s): whether to use them now, and whether a -4 hit for an extra one is worth it. A ${horizon}-gameweek window is wide enough to judge whether a transfer's benefit holds up, short of guessing at fixtures too far out.`;
+  intro.textContent = `Your real FPL squad, pulled from the FPL API. Two different horizons on purpose: the pitch below shows GW${MY_TEAM.upcoming_event} only, because picking an XI and bench order is a decision you remake every week, while the rating and transfer plan use ${horizon} gameweeks, because a transfer is a multi-week commitment. The plan is built around your actual ${freeTransfers} free transfer(s) -- whether to use them now, and whether a -4 hit for an extra one is worth it.`;
 
   const starters = MY_TEAM.current_squad.filter(p => p.is_starter);
   const bench = MY_TEAM.current_squad.filter(p => !p.is_starter);
 
   const ratingHtml = `
     <div class="team-summary">
-      <div><div class="big">${fmt(MY_TEAM.rating_pct, 1)}%</div><div class="label">Rating vs. model's best</div></div>
-      <div><div class="big">${fmt(MY_TEAM.current_predicted_total)}</div><div class="label">Predicted, ${horizon} GW (XI + captain)</div></div>
+      <div><div class="big">${fmt(MY_TEAM.next_gw_predicted_total)}</div><div class="label">GW${MY_TEAM.upcoming_event} only (XI + captain)</div></div>
+      <div><div class="big">${fmt(MY_TEAM.rating_pct, 1)}%</div><div class="label">Rating vs. model's best, ${horizon} GW</div></div>
       <div><div class="big">${freeTransfers}</div><div class="label">Free transfers available</div></div>
       <div><div class="big">${fmtCost(MY_TEAM.bank * 10)}</div><div class="label">In the bank</div></div>
     </div>
@@ -1114,10 +1114,10 @@ function renderMyTeam() {
   content.innerHTML = `
     ${ratingHtml}
     ${planHtml}
-    <div class="team-row-label">Starting XI <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- points shown are the ${horizon}-gameweek total, not next week alone</span></div>
+    <div class="team-row-label">Starting XI <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- GW${MY_TEAM.upcoming_event} only, and the XI/captain that maximises it. This is the lineup decision, so it deliberately ignores the ${horizon}-gameweek view the transfer plan below uses</span></div>
     ${buildPitchHtml(starters)}
-    <div class="team-row-label">Bench</div>
-    <div class="team-players">${byPos(bench).map(benchChip).join("")}</div>
+    <div class="team-row-label">Bench <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- ordered best first for GW${MY_TEAM.upcoming_event}, so the top one is your first autosub</span></div>
+    <div class="team-players">${bench.slice().sort((a, b) => b.predicted_points - a.predicted_points).map(benchChip).join("")}</div>
     <div class="team-row-label" style="margin-top:24px;">Transfer Plan <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- raw gains are discounted to ${fmt(100 * shrinkage, 0)}% before any hit is subtracted, because measuring last season showed only about that much of a predicted transfer gain actually materialises</span></div>
     <div class="transfer-plan-grid">
       ${transferCounts.map(transferCard).join("")}

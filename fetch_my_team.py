@@ -41,6 +41,10 @@ TOP_N_OPTIONS = 3
 # stayed at 3): long enough to judge whether a transfer's benefit holds up, short enough that the
 # fixtures being weighed haven't drifted into guesswork.
 HORIZON_GAMEWEEKS = 5
+# Picking a starting XI and bench order is a THIS WEEK decision -- you set it again next gameweek,
+# so a 5-gameweek total is the wrong number to plan a bench on. The best XI over five weeks and
+# the best XI for the next match are genuinely different teams when fixtures diverge.
+HORIZON_LINEUP = 1
 # Tie-break only, same role as pick_squad's BENCH_WEIGHT -- makes the solver prefer fewer changes
 # when two squads predict equally well, instead of recommending a pointless swap on a coin flip.
 TRANSFER_PENALTY = 0.001
@@ -223,9 +227,9 @@ def starting_total(squad):
     return round(sum(p["predicted_points"] * (2 if p["is_captain"] else 1) for p in squad if p["is_starter"]), 2)
 
 
-def load_all_players():
+def load_all_players(horizon=HORIZON_GAMEWEEKS):
     predictions = pd.read_csv(PREDICTIONS_FILE)
-    nearest = load_nearest_players(predictions, horizon=HORIZON_GAMEWEEKS)
+    nearest = load_nearest_players(predictions, horizon=horizon)
     columns = ["id", "web_name", "team_name", "position", "now_cost", "predicted_points"] + DISPLAY_COLUMNS
     players = nearest[columns].to_dict("records")
     for p in players:
@@ -270,6 +274,14 @@ def main():
 
     current_lineup = pick_best_lineup(current_players)
     current_total = starting_total(current_lineup)
+
+    # A second, separate lineup solved on NEXT GAMEWEEK ONLY -- this is what the pitch view shows,
+    # because that's the decision it supports (who starts, who benches, who takes the armband this
+    # week). The 5-GW numbers above stay as the basis for rating and transfer planning.
+    next_gw_by_id = {p["id"]: p for p in load_all_players(horizon=HORIZON_LINEUP)}
+    next_gw_players = [next_gw_by_id[pid] for pid in current_ids if pid in next_gw_by_id]
+    next_gw_lineup = pick_best_lineup(next_gw_players) if next_gw_players else []
+    next_gw_total = starting_total(next_gw_lineup) if next_gw_lineup else 0.0
 
     top_team = pick_squad(all_players)
     top_total = starting_total(top_team)
@@ -360,7 +372,12 @@ def main():
         "recommended_transfers": recommended_transfers,
         "recommended_net_gain": best_net_gain,
         "hit_rejected_as_marginal": hit_rejected,
-        "current_squad": current_lineup,
+        # current_squad drives the pitch view and is deliberately the NEXT-GAMEWEEK lineup, since
+        # that's the decision it informs. horizon_lineup records which it is so the dashboard can
+        # label it without hardcoding an assumption.
+        "current_squad": next_gw_lineup or current_lineup,
+        "horizon_lineup": HORIZON_LINEUP,
+        "next_gw_predicted_total": next_gw_total,
         "current_predicted_total": current_total,
         "top_team_predicted_total": top_total,
         "rating_pct": rating_pct,
@@ -370,8 +387,19 @@ def main():
         json.dump(output, f, indent=2)
 
     print(f"{manager_name}'s team \"{entry.get('name')}\" going into GW{upcoming_event} "
-          f"({HORIZON_GAMEWEEKS}-GW outlook, {free_transfers} free transfer(s) available): "
-          f"{current_total} pts predicted ({rating_pct}% of the model's own best-possible {top_total}-pt squad)")
+          f"({free_transfers} free transfer(s) available)")
+    print(f"  GW{upcoming_event} only: {next_gw_total} pts predicted from the best XI this week")
+    print(f"  {HORIZON_GAMEWEEKS}-GW outlook: {current_total} pts "
+          f"({rating_pct}% of the model's own best-possible {top_total}-pt squad)")
+    if next_gw_lineup:
+        captain = next((p for p in next_gw_lineup if p["is_captain"]), None)
+        bench = [p for p in next_gw_lineup if not p["is_starter"]]
+        if captain:
+            print(f"  Captain this week: {captain['web_name']} ({captain['predicted_points']:.2f} pts)")
+        if bench:
+            order = ", ".join(f"{p['web_name']} {p['predicted_points']:.2f}"
+                              for p in sorted(bench, key=lambda p: -p["predicted_points"]))
+            print(f"  Bench (best first): {order}")
     for n in transfer_counts:
         options = transfer_scenarios[str(n)]
         hit_note = "" if n <= free_transfers else f", includes a {(n - free_transfers) * HIT_COST_PER_TRANSFER}-pt hit"
