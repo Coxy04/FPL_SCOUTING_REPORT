@@ -180,7 +180,7 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 0.874, "DEF": 0.969, "MID": 1.0, "FWD": 1.0}
+QUANTILE_MARGIN = {"GK": 0.455, "DEF": 0.791, "MID": 0.978, "FWD": 0.984}
 
 
 def get_quantile_margin(position):
@@ -635,6 +635,18 @@ LAGGED_MATCH_STATS = [
 ]
 
 
+# Minutes are recency-weighted rather than flat-averaged, unlike the other lagged stats. A flat
+# 6-match mean can't tell "bench -> starter" from "starter -> bench", so a player winning his place
+# keeps getting discounted by the playing-time multiplier long after he's nailed on.
+#
+# 3.0 was searched, not chosen -- ablation_minutes_signal.py tested 1.0/1.5/2.0/3.0/4.0 and found
+# a clean optimum: halflife 3 improves overall backtest MAE by 2.0% and helps all four positions,
+# while the most REACTIVE setting (halflife 1) was actually worse than the flat mean. The benefit
+# is moderate recency weighting, not maximum responsiveness, which is the opposite of the intuition
+# that prompted the test. Only minutes gets this treatment -- it's the only stat it was tested on.
+MINUTES_EWM_HALFLIFE = 3.0
+
+
 def add_lagged_match_form(frame, group_col=None):
     # Match-level stats (minutes, xG, xA, xGC, bonus) must be lagged to a pre-match rolling
     # average, not the actual value from that same match -- using the same match's own actual
@@ -650,15 +662,23 @@ def add_lagged_match_form(frame, group_col=None):
     def rolling_sd(series):
         return series.shift(1).rolling(TEAM_FORM_WINDOW, min_periods=1).std()
 
+    def recency_weighted(series):
+        # Same shift(1) as the others -- the leakage rule doesn't change just because the weighting
+        # does. See MINUTES_EWM_HALFLIFE for why minutes alone gets this treatment.
+        return series.shift(1).ewm(halflife=MINUTES_EWM_HALFLIFE).mean()
+
     if group_col:
         rolling_mean = frame.groupby(group_col)[LAGGED_MATCH_STATS].transform(rolling_form)
         minutes_sd = frame.groupby(group_col)["minutes"].transform(rolling_sd)
+        minutes_recent = frame.groupby(group_col)["minutes"].transform(recency_weighted)
     else:
         rolling_mean = frame[LAGGED_MATCH_STATS].apply(rolling_form)
         minutes_sd = rolling_sd(frame["minutes"])
+        minutes_recent = recency_weighted(frame["minutes"])
 
     for column in LAGGED_MATCH_STATS:
         frame[column] = rolling_mean[column]
+    frame["minutes"] = minutes_recent.fillna(0)
     frame["minutes_sd"] = minutes_sd.fillna(0)
     return frame
 
@@ -789,8 +809,15 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             if column in history_frame:
                 history_frame[column] = pd.to_numeric(history_frame[column], errors="coerce")
         averages = history_frame.mean(numeric_only=True).to_dict()
-        minutes_sd = pd.to_numeric(history_frame.get("minutes"), errors="coerce").std()
+        minutes_series = pd.to_numeric(history_frame.get("minutes"), errors="coerce").fillna(0)
+        minutes_sd = minutes_series.std()
         minutes_sd = 0 if pd.isna(minutes_sd) else minutes_sd
+        # Recency-weighted to match how training rows compute it (see MINUTES_EWM_HALFLIFE) -- if
+        # the two disagreed, the feature would mean a different thing at train and predict time.
+        # No shift here, unlike training: this history is entirely past matches and the fixture
+        # being predicted isn't in it, so there's nothing to leak.
+        if len(minutes_series):
+            averages["minutes"] = float(minutes_series.ewm(halflife=MINUTES_EWM_HALFLIFE).mean().iloc[-1])
 
         own_understat_team = UNDERSTAT_TEAM_MAP.get(player["team_name"])
         season_points = player.get("total_points", 0)
