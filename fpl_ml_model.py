@@ -18,6 +18,18 @@ ARCHIVE_BASE_URL = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-Le
 OUTPUT_FILE = Path("fpl_ml_predictions.csv")
 GEMS_OUTPUT_FILE = Path("fpl_ml_hidden_gems.csv")
 META_OUTPUT_FILE = Path("fpl_ml_meta.json")
+# One archived snapshot per gameweek of what the model believed going into it. predictions.csv
+# itself is regenerated and overwritten every run (and gitignored), so without this there's no
+# record of what was predicted at the time -- which makes questions like "how much do the model's
+# own rankings actually shuffle week to week?" unanswerable after the fact. Slimmed to the columns
+# that matter for that kind of look-back and gzipped: ~98KB per gameweek, ~3.7MB per season.
+PREDICTION_HISTORY_DIR = Path("prediction_history")
+PREDICTION_HISTORY_COLUMNS = [
+    "id", "web_name", "team_name", "position", "now_cost", "event", "weeks_ahead", "fixture_index",
+    "opponent_short_name", "was_home", "difficulty", "is_blank",
+    "predicted_points", "predicted_points_low", "predicted_points_high", "predicted_points_5gw",
+    "ownership_pct", "status", "chance_of_playing_next_round",
+]
 GEM_OWNERSHIP_MAX = 10.0
 GEM_MIN_PREDICTED_POINTS = 3.0
 POSITION_MAP = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD"}
@@ -896,6 +908,22 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
     return pd.DataFrame(rows)
 
 
+def save_prediction_snapshot(output, target_event, generated_at):
+    """Archives what the model predicted going into a given gameweek, one file per gameweek.
+
+    Re-running within the same gameweek overwrites that gameweek's file rather than piling up
+    snapshots -- the meaningful record is the model's final view before that deadline, and the
+    deadline lock in get_target_event already stops the target from advancing mid-gameweek, so
+    the last write before a deadline is exactly that view."""
+    PREDICTION_HISTORY_DIR.mkdir(exist_ok=True)
+    columns = [c for c in PREDICTION_HISTORY_COLUMNS if c in output.columns]
+    snapshot = output[columns].copy()
+    snapshot.insert(0, "generated_at", generated_at)
+    path = PREDICTION_HISTORY_DIR / f"gw{int(target_event):02d}.csv.gz"
+    snapshot.to_csv(path, index=False, compression="gzip")
+    return path
+
+
 def get_target_event(events, fixtures):
     """The gameweek fresh predictions should target -- the next one whose transfer deadline
     hasn't passed yet. Returns None if we're currently mid-gameweek (deadline passed, but the
@@ -1083,8 +1111,10 @@ def main():
     # Anchored to each player's nearest fixture only, not diluted across all 5 gameweeks.
     upcoming["underperformance_gap"] = upcoming["predicted_points"] - upcoming["recent_points_avg"]
 
+    generated_at = datetime.now(timezone.utc).isoformat()
     output = upcoming.sort_values(["weeks_ahead", "predicted_points"], ascending=[True, False])
     output.to_csv(OUTPUT_FILE, index=False)
+    snapshot_path = save_prediction_snapshot(output, target_event, generated_at)
 
     nearest = upcoming[upcoming["weeks_ahead"] == 1]
     gems = nearest[
@@ -1099,7 +1129,7 @@ def main():
     # already saved successfully -- the file the dashboard build actually depends on shouldn't be
     # gated behind a display step that has nothing to do with the data itself.
     meta = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": generated_at,
         "training_rows_total": int(len(training)),
         "training_rows_current_season": int((training["source"] == "fpl_live_current_season").sum()),
         "training_rows_archive": int((training["source"] != "fpl_live_current_season").sum()),
@@ -1119,7 +1149,7 @@ def main():
     }
     with open(META_OUTPUT_FILE, "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"Saved {OUTPUT_FILE}")
+    print(f"Saved {OUTPUT_FILE} (archived GW{target_event} snapshot to {snapshot_path})")
 
     print(f"\nTop hidden gems (rated highly, under {GEM_OWNERSHIP_MAX}% owned, underperforming recent points):")
     print(

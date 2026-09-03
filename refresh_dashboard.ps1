@@ -29,7 +29,7 @@ Write-Host "`nBuilding dashboard..." -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "build_dashboard.py failed" }
 
 Write-Host "`nPushing to GitHub Pages..." -ForegroundColor Cyan
-git add fpl_ml_model.py fpl_ml_accuracy_history.jsonl fpl_ml_team_history.jsonl docs/index.html
+git add fpl_ml_model.py fpl_ml_accuracy_history.jsonl fpl_ml_team_history.jsonl prediction_history docs/index.html
 
 $staged = git diff --cached --name-only
 if ($staged) {
