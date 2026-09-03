@@ -348,6 +348,7 @@
   }
   .transfer-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
   .transfer-option-head { font-size: 12.5px; font-weight: 700; color: var(--ink-secondary); margin: 4px 0; }
+  .transfer-math { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-muted); margin-bottom: 4px; }
   .transfer-option-ranked { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 
   /* fixture ticker */
@@ -1052,19 +1053,23 @@ function renderMyTeam() {
     </div>
   `;
 
+  const shrinkage = MY_TEAM.transfer_gain_shrinkage;
+  const rejectedNote = MY_TEAM.hit_rejected_as_marginal
+    ? ` A hit-paying option scored higher on raw numbers, but by less than the calibration can actually resolve — and a hit is irreversible, so it isn't recommended.`
+    : "";
   const planHtml = (() => {
     if (!MY_TEAM.recommended_transfers) {
       return `
         <div class="plan-banner plan-hold">
           <strong>Recommendation: hold.</strong> No transfer combination found beats your current squad once weighed against ${horizon} gameweeks.
-          Banking takes you to <strong>${MY_TEAM.next_week_free_transfers_if_hold}</strong> free transfer(s) next week.
+          Banking takes you to <strong>${MY_TEAM.next_week_free_transfers_if_hold}</strong> free transfer(s) next week.${rejectedNote}
         </div>
       `;
     }
     return `
-      <div class="plan-banner plan-use">
+      <div class="plan-banner ${MY_TEAM.hit_rejected_as_marginal ? "plan-hold" : "plan-use"}">
         <strong>Recommendation: use ${MY_TEAM.recommended_transfers} transfer${MY_TEAM.recommended_transfers > 1 ? "s" : ""} now</strong>
-        for a net gain of <strong>+${fmt(MY_TEAM.recommended_net_gain, 2)} pts</strong> over ${horizon} GWs (after any hit cost).
+        for a net gain of <strong>+${fmt(MY_TEAM.recommended_net_gain, 2)} pts</strong> over ${horizon} GWs.${rejectedNote}
       </div>
     `;
   })();
@@ -1087,9 +1092,11 @@ function renderMyTeam() {
         `;
       }).join("");
       const gainCls = s.net_gain > 0 ? "gap-positive" : "";
+      const hitPart = s.hit_cost ? ` − ${s.hit_cost} hit` : "";
       return `
         <div class="transfer-option${idx > 0 ? " transfer-option-ranked" : ""}">
-          <div class="transfer-option-head">#${idx + 1} -- ${fmt(s.predicted_total)} pts (${fmt(s.rating_pct, 1)}%) <span class="${gainCls}">net ${s.net_gain >= 0 ? "+" : ""}${fmt(s.net_gain, 2)}</span></div>
+          <div class="transfer-option-head">#${idx + 1} <span class="${gainCls}">net ${s.net_gain >= 0 ? "+" : ""}${fmt(s.net_gain, 2)}</span></div>
+          <div class="transfer-math">raw +${fmt(s.raw_gain, 2)} → discounted +${fmt(s.expected_gain, 2)}${hitPart}</div>
           ${moves}
         </div>
       `;
@@ -1111,7 +1118,7 @@ function renderMyTeam() {
     ${buildPitchHtml(starters)}
     <div class="team-row-label">Bench</div>
     <div class="team-players">${byPos(bench).map(benchChip).join("")}</div>
-    <div class="team-row-label" style="margin-top:24px;">Transfer Plan <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- "net" already subtracts any hit cost</span></div>
+    <div class="team-row-label" style="margin-top:24px;">Transfer Plan <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- raw gains are discounted to ${fmt(100 * shrinkage, 0)}% before any hit is subtracted, because measuring last season showed only about that much of a predicted transfer gain actually materialises</span></div>
     <div class="transfer-plan-grid">
       ${transferCounts.map(transferCard).join("")}
     </div>

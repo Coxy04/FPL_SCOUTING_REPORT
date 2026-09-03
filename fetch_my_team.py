@@ -46,6 +46,25 @@ HORIZON_GAMEWEEKS = 5
 TRANSFER_PENALTY = 0.001
 # The real cost of a transfer beyond your free allowance -- FPL's own rule, not a modeling choice.
 HIT_COST_PER_TRANSFER = 4
+# Predicted transfer gains are systematically too optimistic and must be discounted before being
+# weighed against a hit. Two structural reasons, neither about football: pick_with_transfers takes
+# the max over ~700 players, so it selects for players whose predictions are noisily HIGH, while
+# the incumbents it sells are a fixed 15 with no such selection applied; and a hit costs -4 once
+# while the gain is summed over the whole horizon, so any per-week bias gets multiplied.
+#
+# calibrate_transfer_gains.py measures the size of that gap by replaying the decision on last
+# season's archive: 288 scenarios, incumbent squads at 84.7% of optimal (matching a real managed
+# squad), predicted +19.72 -> realised +12.97. Re-run it to refresh this number; without it the
+# tool recommended a -12 hit as its BEST option, which is what prompted measuring this at all.
+TRANSFER_GAIN_SHRINKAGE = 0.66
+# A hit has to beat the best hit-free option by this margin before it's worth recommending.
+# The calibration's own sub-slices disagree by roughly this much: on a live example the 3-transfer
+# option came out at +13.2 using the overall 0.66, +12.4 using per-transfer-count shrinkages, and
+# +14.2 using per-gain-size ones -- while the 2-transfer (free) option sat at +11.7 to +12.9. Those
+# slices are noisy (n=96 each, non-monotonic, and gain-size is confounded with transfer count), so
+# a sub-3-point edge for a hit is not a real edge. A hit is also irreversible and spends a transfer
+# that would otherwise bank, so ties should break towards not taking it.
+HIT_DECISION_MARGIN = 3.0
 FREE_TRANSFER_CAP = 5
 FIRST_TRANSFER_EVENT = 2  # GW1 is the initial squad -- no transfers possible, nothing to bank yet
 ROLLOVER_CHIPS = {"wildcard", "freehit"}
@@ -242,13 +261,20 @@ def main():
     transfer_scenarios = {}
     best_net_gain = 0.0  # 0 transfers ("hold") is always a valid baseline with zero net gain
     recommended_transfers = 0
+    best_free_gain = 0.0  # best option that doesn't cost a hit -- what a hit has to beat
+    best_free_transfers = 0
     for n in transfer_counts:
         hit_cost = max(0, n - free_transfers) * HIT_COST_PER_TRANSFER
         ranked = pick_top_transfer_scenarios(current_ids, current_value, bank_raw, all_players, n, current_total, TOP_N_OPTIONS)
         scenario_list = []
         for rank, squad in enumerate(ranked):
             total = starting_total(squad)
-            net_gain = round(total - current_total - hit_cost, 2)
+            raw_gain = total - current_total
+            # Discount the predicted gain before netting off the hit -- the hit is a real, certain
+            # -4, the gain is an optimistic estimate, so comparing them undiscounted is comparing
+            # a hard cost against a soft benefit.
+            expected_gain = raw_gain * TRANSFER_GAIN_SHRINKAGE
+            net_gain = round(expected_gain - hit_cost, 2)
             new_ids = {p["id"] for p in squad}
             transferred_out = sorted((by_id[pid] for pid in current_ids if pid not in new_ids), key=lambda p: p["position"])
             transferred_in = sorted((p for p in squad if p["id"] not in current_ids), key=lambda p: p["position"])
@@ -257,14 +283,29 @@ def main():
                 "predicted_total": total,
                 "rating_pct": round(100 * total / top_total, 1) if top_total else None,
                 "hit_cost": hit_cost,
+                "raw_gain": round(raw_gain, 2),
+                "expected_gain": round(expected_gain, 2),
                 "net_gain": net_gain,
                 "transfers_out": transferred_out,
                 "transfers_in": transferred_in,
             })
-            if rank == 0 and net_gain > best_net_gain:
-                best_net_gain = net_gain
-                recommended_transfers = n
+            if rank == 0:
+                if hit_cost == 0 and net_gain > best_free_gain:
+                    best_free_gain = net_gain
+                    best_free_transfers = n
+                if net_gain > best_net_gain:
+                    best_net_gain = net_gain
+                    recommended_transfers = n
         transfer_scenarios[str(n)] = scenario_list
+
+    # A hit only gets recommended if it clears the best hit-free option by a real margin -- see
+    # HIT_DECISION_MARGIN. Without this the tool would call a sub-1-point edge for paying 4 points,
+    # which is well inside what the calibration itself can resolve.
+    hit_rejected = False
+    if recommended_transfers > free_transfers and best_net_gain - best_free_gain < HIT_DECISION_MARGIN:
+        hit_rejected = True
+        recommended_transfers = best_free_transfers
+        best_net_gain = best_free_gain
 
     # Deliberately NOT saving manager_name/team_name into the output file -- this JSON gets baked
     # into a public GitHub Pages dashboard, and a real name in a public git history is effectively
@@ -278,9 +319,11 @@ def main():
         "bank": bank_raw / 10,
         "team_value": team_value_raw / 10,
         "free_transfers": free_transfers,
+        "transfer_gain_shrinkage": TRANSFER_GAIN_SHRINKAGE,
         "next_week_free_transfers_if_hold": next_week_free_transfers_if_hold,
         "recommended_transfers": recommended_transfers,
         "recommended_net_gain": best_net_gain,
+        "hit_rejected_as_marginal": hit_rejected,
         "current_squad": current_lineup,
         "current_predicted_total": current_total,
         "top_team_predicted_total": top_total,
@@ -302,7 +345,9 @@ def main():
         print(f"  With {n} transfer(s){hit_note}, top {len(options)} option(s):")
         for rank, s in enumerate(options, start=1):
             moves = ", ".join(f"{o['web_name']} -> {i['web_name']}" for o, i in zip(s["transfers_out"], s["transfers_in"]))
-            print(f"    {rank}. {s['predicted_total']} pts, net {s['net_gain']:+.2f} after any hit ({s['rating_pct']}%) -- {moves}")
+            hit_part = f" - {s['hit_cost']} hit" if s["hit_cost"] else ""
+            print(f"    {rank}. raw {s['raw_gain']:+.2f} -> discounted {s['expected_gain']:+.2f}"
+                  f"{hit_part} = net {s['net_gain']:+.2f}  -- {moves}")
 
     if recommended_transfers == 0:
         print(f"\nRecommendation: HOLD. No transfer combination found nets a real gain over your "
@@ -311,10 +356,17 @@ def main():
     else:
         print(f"\nRecommendation: use {recommended_transfers} transfer(s) now for a net gain of "
               f"+{best_net_gain:.2f} pts over {HORIZON_GAMEWEEKS} GWs.")
+    if hit_rejected:
+        print(f"A hit-paying option scored higher on the raw numbers but by less than "
+              f"{HIT_DECISION_MARGIN:.0f} pts, which is inside what the gain calibration can "
+              f"actually resolve -- not recommending it. A hit is also irreversible and spends a "
+              f"transfer that would otherwise bank.")
     print(
-        "(This only measures the cost of waiting -- the predicted points forgone by not "
-        "transferring now -- not the value of waiting, which depends on information the model "
-        "doesn't have yet: a price rise, a fitness update, a fixture swing further out.)"
+        f"(Gains are discounted by {TRANSFER_GAIN_SHRINKAGE:.2f} before netting off any hit -- "
+        f"calibrate_transfer_gains.py measured that only ~{TRANSFER_GAIN_SHRINKAGE:.0%} of a "
+        "predicted transfer gain actually materialises, because the optimiser selects for players "
+        "whose predictions are noisily high. This also only measures the cost of waiting, not the "
+        "value of waiting, which depends on information the model doesn't have yet.)"
     )
     print(f"Saved {OUTPUT_FILE}")
 
