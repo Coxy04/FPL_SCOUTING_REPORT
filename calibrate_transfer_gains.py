@@ -54,6 +54,7 @@ from fpl_ml_model import (
 )
 from pick_team import BUDGET, MAX_PER_CLUB, SQUAD_QUOTAS, STARTER_MAX, STARTER_MIN, pick_squad
 
+SCENARIOS_FILE = "transfer_calibration_scenarios.csv"
 HORIZON = 5
 # Each decision point needs enough history behind it to train on and HORIZON gameweeks of results
 # after it to score against, which is what bounds this range rather than an arbitrary choice.
@@ -136,6 +137,25 @@ def realistic_incumbent_squad(players, rng):
     if pulp.LpStatus[prob.solve(pulp.PULP_CBC_CMD(msg=0))] != "Optimal":
         return None
     return [by_id[i] for i in squad if squad[i].value() == 1]
+
+
+def bootstrap_shrinkage_ci(group, iterations=2000, seed=7):
+    """90% CI for the shrinkage ratio, by resampling scenarios with replacement. A ratio of two
+    means has no tidy closed-form standard error, and these per-position samples are small (~75-95
+    scenarios), so a point estimate on its own invites reading noise as signal -- which is the
+    exact failure mode this whole calibration exists to correct."""
+    rng = np.random.default_rng(seed)
+    predicted = group["predicted_gain"].to_numpy()
+    realised = group["realised_gain"].to_numpy()
+    ratios = []
+    for _ in range(iterations):
+        idx = rng.integers(0, len(predicted), len(predicted))
+        pred_mean = predicted[idx].mean()
+        if pred_mean:
+            ratios.append(realised[idx].mean() / pred_mean)
+    if not ratios:
+        return float("nan"), float("nan")
+    return float(np.percentile(ratios, 5)), float(np.percentile(ratios, 95))
 
 
 def score_squad(squad_players, actuals):
@@ -241,9 +261,33 @@ def main():
                     "decision_gw": decision_gw,
                     "squad_no": squad_no,
                     "transfers": changed,
+                    "position": "any",
                     "squad_quality_pct": round(100 * base_pred / best_possible, 1) if best_possible else None,
                     "predicted_gain": new_pred - base_pred,
                     "realised_gain": new_real - base_real,
+                })
+
+            # Per-position single transfers, so each position gets a balanced sample rather than
+            # whatever mix the unconstrained optimiser happened to pick. Restricting the candidate
+            # pool to incumbents plus one position forces the swap to be within that position:
+            # the exact-quota constraints mean bringing in a DEF can only drop a DEF.
+            for position in POSITION_MAP.values():
+                pool = [p for p in players if p["id"] in current_ids or p["position"] == position]
+                constrained = pick_with_transfers(current_ids, current_value, 0, pool, 1)
+                if constrained is None:
+                    continue
+                changed = [p for p in constrained if p["id"] not in current_ids]
+                if len(changed) != 1:
+                    continue
+                pos_pred, pos_real = score_squad([by_id[p["id"]] for p in constrained], actuals)
+                records.append({
+                    "decision_gw": decision_gw,
+                    "squad_no": squad_no,
+                    "transfers": 1,
+                    "position": position,
+                    "squad_quality_pct": round(100 * base_pred / best_possible, 1) if best_possible else None,
+                    "predicted_gain": pos_pred - base_pred,
+                    "realised_gain": pos_real - base_real,
                 })
         print(f"GW{decision_gw}: done ({len([r for r in records if r['decision_gw'] == decision_gw])} scenarios)")
 
@@ -251,7 +295,17 @@ def main():
         print("No scenarios evaluated.")
         return
 
-    df = pd.DataFrame(records)
+    all_records = pd.DataFrame(records)
+    # Saved so the scenarios can be re-analysed (different bins, extra cuts) without paying for
+    # another full walk of the archive, which is the expensive part of this script by far.
+    all_records.to_csv(SCENARIOS_FILE, index=False)
+    print(f"\nSaved {len(all_records)} raw scenarios to {SCENARIOS_FILE}")
+    # The headline shrinkage must come only from unconstrained scenarios -- the per-position runs
+    # are a separate, deliberately balanced sample and would skew the overall figure towards
+    # single transfers if pooled in.
+    df = all_records[all_records["position"] == "any"].copy()
+    by_position = all_records[all_records["position"] != "any"].copy()
+
     print(f"\n{len(df)} transfer scenarios across {df['decision_gw'].nunique()} decision gameweeks, "
           f"{HORIZON}-GW horizon.")
     print(f"Incumbent squad quality: {df['squad_quality_pct'].mean():.1f}% of optimal on average "
@@ -279,6 +333,23 @@ def main():
         win = 100 * float((group["realised_gain"] > 0).mean())
         label = f"{low:.0f}-{high:.0f} pts" if high < 1e9 else f"{low:.0f}+ pts"
         print(f"{label:<18}{len(group):<6}{pred_mean:<17.2f}{real_mean:<16.2f}{shrink:<12.2f}{win:<14.0f}")
+
+    if not by_position.empty:
+        print("\nSingle transfers by position (balanced sample -- the swap is forced to be within "
+              "each position). 90% CI is bootstrapped, because a ratio of means has no clean "
+              "closed-form error and these per-position samples are small enough that the point "
+              "estimate alone would be easy to over-read:")
+        print(f"{'Position':<11}{'n':<6}{'Mean predicted':<17}{'Mean realised':<16}{'Shrinkage':<12}{'90% CI':<20}{'% gained':<10}")
+        for position in POSITION_MAP.values():
+            group = by_position[by_position["position"] == position]
+            if group.empty:
+                continue
+            pred_mean, real_mean = group["predicted_gain"].mean(), group["realised_gain"].mean()
+            shrink = real_mean / pred_mean if pred_mean else float("nan")
+            low, high = bootstrap_shrinkage_ci(group)
+            win = 100 * float((group["realised_gain"] > 0).mean())
+            print(f"{position:<11}{len(group):<6}{pred_mean:<17.2f}{real_mean:<16.2f}{shrink:<12.2f}"
+                  f"{f'[{low:.2f}, {high:.2f}]':<20}{win:<10.0f}")
 
     overall_pred, overall_real = df["predicted_gain"].mean(), df["realised_gain"].mean()
     shrinkage = overall_real / overall_pred if overall_pred else float("nan")

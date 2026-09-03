@@ -57,6 +57,27 @@ HIT_COST_PER_TRANSFER = 4
 # squad), predicted +19.72 -> realised +12.97. Re-run it to refresh this number; without it the
 # tool recommended a -12 hit as its BEST option, which is what prompted measuring this at all.
 TRANSFER_GAIN_SHRINKAGE = 0.66
+# Shrinkage varies a lot by position, and the flat rate above is known wrong in both directions.
+# Measured (90% CI): GK 0.55 [-0.13, 1.30], DEF 0.89 [0.66, 1.12], MID 0.57 [0.35, 0.82],
+# FWD 0.08 [-0.33, 0.48]. DEF and FWD don't overlap at all -- defender swaps deliver roughly what
+# the model predicts, forward swaps essentially don't (51% of them gained anything, a coin flip).
+# Plausible reading: defender points lean on clean sheets, which are a team-level property the
+# model's team-form features genuinely capture, while the gap between two decent forwards is
+# mostly finishing variance the model can't see.
+#
+# These are PARTIALLY POOLED 50/50 with the overall rate rather than used raw: n<100 per position
+# and a ratio-of-means estimate, so the extremes (especially FWD's 0.08) are not worth taking at
+# face value yet. As live snapshots accumulate and the samples grow, the pooling weight should
+# move toward the per-position numbers. GK stays effectively at the pooled rate -- its interval is
+# too wide to say anything, though GK gains are so small it rarely changes a decision.
+_MEASURED_BY_POSITION = {"GK": 0.55, "DEF": 0.89, "MID": 0.57, "FWD": 0.08}
+POSITION_POOLING_WEIGHT = 0.5
+TRANSFER_GAIN_SHRINKAGE_BY_POSITION = {
+    position: round(
+        POSITION_POOLING_WEIGHT * measured + (1 - POSITION_POOLING_WEIGHT) * TRANSFER_GAIN_SHRINKAGE, 3
+    )
+    for position, measured in _MEASURED_BY_POSITION.items()
+}
 # A hit has to beat the best hit-free option by this margin before it's worth recommending.
 # The calibration's own sub-slices disagree by roughly this much: on a live example the 3-transfer
 # option came out at +13.2 using the overall 0.66, +12.4 using per-transfer-count shrinkages, and
@@ -267,35 +288,49 @@ def main():
         hit_cost = max(0, n - free_transfers) * HIT_COST_PER_TRANSFER
         ranked = pick_top_transfer_scenarios(current_ids, current_value, bank_raw, all_players, n, current_total, TOP_N_OPTIONS)
         scenario_list = []
-        for rank, squad in enumerate(ranked):
+        for squad in ranked:
             total = starting_total(squad)
             raw_gain = total - current_total
-            # Discount the predicted gain before netting off the hit -- the hit is a real, certain
-            # -4, the gain is an optimistic estimate, so comparing them undiscounted is comparing
-            # a hard cost against a soft benefit.
-            expected_gain = raw_gain * TRANSFER_GAIN_SHRINKAGE
-            net_gain = round(expected_gain - hit_cost, 2)
             new_ids = {p["id"] for p in squad}
             transferred_out = sorted((by_id[pid] for pid in current_ids if pid not in new_ids), key=lambda p: p["position"])
             transferred_in = sorted((p for p in squad if p["id"] not in current_ids), key=lambda p: p["position"])
+
+            # Discount the predicted gain before netting off the hit -- the hit is a real, certain
+            # -4, the gain is an optimistic estimate, so comparing them undiscounted is comparing
+            # a hard cost against a soft benefit. Squad quotas force every transfer to be
+            # like-for-like by position, so the incoming players' positions are exactly the
+            # positions being changed, and averaging their rates weights the mix correctly.
+            rates = [
+                TRANSFER_GAIN_SHRINKAGE_BY_POSITION.get(p["position"], TRANSFER_GAIN_SHRINKAGE)
+                for p in transferred_in
+            ]
+            shrink = sum(rates) / len(rates) if rates else TRANSFER_GAIN_SHRINKAGE
+            expected_gain = raw_gain * shrink
+            net_gain = round(expected_gain - hit_cost, 2)
             scenario_list.append({
                 "squad": squad,
                 "predicted_total": total,
                 "rating_pct": round(100 * total / top_total, 1) if top_total else None,
                 "hit_cost": hit_cost,
                 "raw_gain": round(raw_gain, 2),
+                "shrinkage_applied": round(shrink, 3),
                 "expected_gain": round(expected_gain, 2),
                 "net_gain": net_gain,
                 "transfers_out": transferred_out,
                 "transfers_in": transferred_in,
             })
-            if rank == 0:
-                if hit_cost == 0 and net_gain > best_free_gain:
-                    best_free_gain = net_gain
-                    best_free_transfers = n
-                if net_gain > best_net_gain:
-                    best_net_gain = net_gain
-                    recommended_transfers = n
+        # Re-rank by net gain, not by raw predicted total. Position-aware shrinkage means a
+        # slightly-lower-raw option with a defender-heavy mix can genuinely beat a higher-raw one,
+        # so the MILP's raw ordering is no longer the ordering that matters.
+        scenario_list.sort(key=lambda s: s["net_gain"], reverse=True)
+        if scenario_list:
+            best = scenario_list[0]["net_gain"]
+            if hit_cost == 0 and best > best_free_gain:
+                best_free_gain = best
+                best_free_transfers = n
+            if best > best_net_gain:
+                best_net_gain = best
+                recommended_transfers = n
         transfer_scenarios[str(n)] = scenario_list
 
     # A hit only gets recommended if it clears the best hit-free option by a real margin -- see
@@ -320,6 +355,7 @@ def main():
         "team_value": team_value_raw / 10,
         "free_transfers": free_transfers,
         "transfer_gain_shrinkage": TRANSFER_GAIN_SHRINKAGE,
+        "transfer_gain_shrinkage_by_position": TRANSFER_GAIN_SHRINKAGE_BY_POSITION,
         "next_week_free_transfers_if_hold": next_week_free_transfers_if_hold,
         "recommended_transfers": recommended_transfers,
         "recommended_net_gain": best_net_gain,
@@ -346,8 +382,8 @@ def main():
         for rank, s in enumerate(options, start=1):
             moves = ", ".join(f"{o['web_name']} -> {i['web_name']}" for o, i in zip(s["transfers_out"], s["transfers_in"]))
             hit_part = f" - {s['hit_cost']} hit" if s["hit_cost"] else ""
-            print(f"    {rank}. raw {s['raw_gain']:+.2f} -> discounted {s['expected_gain']:+.2f}"
-                  f"{hit_part} = net {s['net_gain']:+.2f}  -- {moves}")
+            print(f"    {rank}. raw {s['raw_gain']:+.2f} x{s['shrinkage_applied']:.2f} -> "
+                  f"{s['expected_gain']:+.2f}{hit_part} = net {s['net_gain']:+.2f}  -- {moves}")
 
     if recommended_transfers == 0:
         print(f"\nRecommendation: HOLD. No transfer combination found nets a real gain over your "
@@ -361,12 +397,13 @@ def main():
               f"{HIT_DECISION_MARGIN:.0f} pts, which is inside what the gain calibration can "
               f"actually resolve -- not recommending it. A hit is also irreversible and spends a "
               f"transfer that would otherwise bank.")
+    rates = ", ".join(f"{pos} {rate:.2f}" for pos, rate in TRANSFER_GAIN_SHRINKAGE_BY_POSITION.items())
     print(
-        f"(Gains are discounted by {TRANSFER_GAIN_SHRINKAGE:.2f} before netting off any hit -- "
-        f"calibrate_transfer_gains.py measured that only ~{TRANSFER_GAIN_SHRINKAGE:.0%} of a "
-        "predicted transfer gain actually materialises, because the optimiser selects for players "
-        "whose predictions are noisily high. This also only measures the cost of waiting, not the "
-        "value of waiting, which depends on information the model doesn't have yet.)"
+        f"(Gains are discounted by position before netting off any hit -- {rates}. "
+        "calibrate_transfer_gains.py measured how much of a predicted transfer gain actually "
+        "materialises: forward swaps deliver least, defender swaps most. This also only measures "
+        "the cost of waiting, not the value of waiting, which depends on information the model "
+        "doesn't have yet.)"
     )
     print(f"Saved {OUTPUT_FILE}")
 
