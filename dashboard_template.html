@@ -336,6 +336,17 @@
   .transfer-in { color: var(--good); }
   .transfer-arrow { color: var(--ink-muted); }
   .transfer-row .cost { font-family: "IBM Plex Mono", monospace; font-weight: 400; color: var(--ink-muted); font-size: 12px; }
+
+  .plan-banner {
+    border-radius: 10px; padding: 14px 18px; margin: 4px 0 20px; font-size: 14px; line-height: 1.5;
+  }
+  .plan-use { background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+  .plan-hold { background: var(--gold-soft); border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent); }
+  .hit-tag {
+    display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+    background: var(--critical); color: #fff; border-radius: 4px; padding: 1px 6px; vertical-align: middle;
+  }
+  .transfer-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
   .transfer-option-head { font-size: 12.5px; font-weight: 700; color: var(--ink-secondary); margin: 4px 0; }
   .transfer-option-ranked { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 
@@ -1026,7 +1037,8 @@ function renderMyTeam() {
   }
 
   const horizon = MY_TEAM.horizon_gameweeks || 1;
-  intro.textContent = `Your real FPL squad, pulled from the FPL API, rated over the next ${horizon} gameweeks as a percentage of the model's own best-possible squad for the same budget (see "Model's Benchmark Pick" below, which is scored one gameweek at a time instead) -- plus the best 1- and 2-transfer moves it can find within your actual bank. A ${horizon}-gameweek window smooths out single-match noise without leaning too hard on fixtures further out than the model can really call.`;
+  const freeTransfers = MY_TEAM.free_transfers ?? 1;
+  intro.textContent = `Your real FPL squad, pulled from the FPL API, rated over the next ${horizon} gameweeks as a percentage of the model's own best-possible squad for the same budget (see "Model's Benchmark Pick" below, which is scored one gameweek at a time instead) -- plus a transfer plan built around your actual ${freeTransfers} free transfer(s): whether to use them now, and whether a -4 hit for an extra one is worth it. A ${horizon}-gameweek window is wide enough to judge whether a transfer's benefit holds up, short of guessing at fixtures too far out.`;
 
   const starters = MY_TEAM.current_squad.filter(p => p.is_starter);
   const bench = MY_TEAM.current_squad.filter(p => !p.is_starter);
@@ -1035,15 +1047,33 @@ function renderMyTeam() {
     <div class="team-summary">
       <div><div class="big">${fmt(MY_TEAM.rating_pct, 1)}%</div><div class="label">Rating vs. model's best</div></div>
       <div><div class="big">${fmt(MY_TEAM.current_predicted_total)}</div><div class="label">Predicted, ${horizon} GW (XI + captain)</div></div>
+      <div><div class="big">${freeTransfers}</div><div class="label">Free transfers available</div></div>
       <div><div class="big">${fmtCost(MY_TEAM.bank * 10)}</div><div class="label">In the bank</div></div>
-      <div><div class="big">${fmtCost(MY_TEAM.team_value * 10)}</div><div class="label">Squad value</div></div>
     </div>
   `;
 
+  const planHtml = (() => {
+    if (!MY_TEAM.recommended_transfers) {
+      return `
+        <div class="plan-banner plan-hold">
+          <strong>Recommendation: hold.</strong> No transfer combination found beats your current squad once weighed against ${horizon} gameweeks.
+          Banking takes you to <strong>${MY_TEAM.next_week_free_transfers_if_hold}</strong> free transfer(s) next week.
+        </div>
+      `;
+    }
+    return `
+      <div class="plan-banner plan-use">
+        <strong>Recommendation: use ${MY_TEAM.recommended_transfers} transfer${MY_TEAM.recommended_transfers > 1 ? "s" : ""} now</strong>
+        for a net gain of <strong>+${fmt(MY_TEAM.recommended_net_gain, 2)} pts</strong> over ${horizon} GWs (after any hit cost).
+      </div>
+    `;
+  })();
+
   const transferCard = n => {
     const options = MY_TEAM.transfer_scenarios[n] || [];
+    const hitNote = n > freeTransfers ? ` <span class="hit-tag">-${(n - freeTransfers) * 4}pt hit</span>` : "";
     if (!options.length) {
-      return `<div class="card"><h3>${n} transfer${n > 1 ? "s" : ""}</h3><div class="exp-empty">No change beats your current squad.</div></div>`;
+      return `<div class="card"><h3>${n} transfer${n > 1 ? "s" : ""}${hitNote}</h3><div class="exp-empty">No change beats your current squad.</div></div>`;
     }
     const optionsHtml = options.map((s, idx) => {
       const moves = s.transfers_out.map((out, i) => {
@@ -1056,32 +1086,34 @@ function renderMyTeam() {
           </div>
         `;
       }).join("");
-      const gain = (s.predicted_total - MY_TEAM.current_predicted_total).toFixed(1);
+      const gainCls = s.net_gain > 0 ? "gap-positive" : "";
       return `
         <div class="transfer-option${idx > 0 ? " transfer-option-ranked" : ""}">
-          <div class="transfer-option-head">#${idx + 1} -- ${fmt(s.predicted_total)} pts (${fmt(s.rating_pct, 1)}%) <span class="gap-positive">+${gain}</span></div>
+          <div class="transfer-option-head">#${idx + 1} -- ${fmt(s.predicted_total)} pts (${fmt(s.rating_pct, 1)}%) <span class="${gainCls}">net ${s.net_gain >= 0 ? "+" : ""}${fmt(s.net_gain, 2)}</span></div>
           ${moves}
         </div>
       `;
     }).join("");
     return `
       <div class="card">
-        <h3>${n} transfer${n > 1 ? "s" : ""} -- top ${options.length} option${options.length > 1 ? "s" : ""}, ${horizon} GW outlook</h3>
+        <h3>${n} transfer${n > 1 ? "s" : ""}${hitNote} -- top ${options.length} option${options.length > 1 ? "s" : ""}</h3>
         ${optionsHtml}
       </div>
     `;
   };
 
+  const transferCounts = Object.keys(MY_TEAM.transfer_scenarios).map(Number).sort((a, b) => a - b);
+
   content.innerHTML = `
     ${ratingHtml}
+    ${planHtml}
     <div class="team-row-label">Starting XI <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- points shown are the ${horizon}-gameweek total, not next week alone</span></div>
     ${buildPitchHtml(starters)}
     <div class="team-row-label">Bench</div>
     <div class="team-players">${byPos(bench).map(benchChip).join("")}</div>
-    <div class="team-row-label" style="margin-top:24px;">Suggested Transfers</div>
-    <div class="gems-layout">
-      ${transferCard(1)}
-      ${transferCard(2)}
+    <div class="team-row-label" style="margin-top:24px;">Transfer Plan <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- "net" already subtracts any hit cost</span></div>
+    <div class="transfer-plan-grid">
+      ${transferCounts.map(transferCard).join("")}
     </div>
   `;
 }

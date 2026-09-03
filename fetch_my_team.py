@@ -35,16 +35,20 @@ from pick_team import (
 MY_TEAM_ID = 4340534
 PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 OUTPUT_FILE = Path("my_fpl_team.json")
-TRANSFER_OPTIONS = [1, 2]
 TOP_N_OPTIONS = 3
-# A single gameweek's prediction is noisy for a decision that locks in for several weeks (one
-# unlucky fixture could tip a transfer call either way); 5 weeks starts trusting fixture-difficulty
-# ratings that far out more than they deserve. 3 is the middle ground -- long enough to smooth out
-# single-match noise, short enough that the fixtures being weighed are still reasonably known.
-HORIZON_GAMEWEEKS = 3
+# This is a multi-week planning decision (use transfers now vs. bank them), not a single-gameweek
+# call -- 5 gameweeks is deliberately the outlook here (wider than "My Team"'s own rating, which
+# stayed at 3): long enough to judge whether a transfer's benefit holds up, short enough that the
+# fixtures being weighed haven't drifted into guesswork.
+HORIZON_GAMEWEEKS = 5
 # Tie-break only, same role as pick_squad's BENCH_WEIGHT -- makes the solver prefer fewer changes
 # when two squads predict equally well, instead of recommending a pointless swap on a coin flip.
 TRANSFER_PENALTY = 0.001
+# The real cost of a transfer beyond your free allowance -- FPL's own rule, not a modeling choice.
+HIT_COST_PER_TRANSFER = 4
+FREE_TRANSFER_CAP = 5
+FIRST_TRANSFER_EVENT = 2  # GW1 is the initial squad -- no transfers possible, nothing to bank yet
+ROLLOVER_CHIPS = {"wildcard", "freehit"}
 
 
 def fetch_current_squad(session, team_id):
@@ -52,6 +56,26 @@ def fetch_current_squad(session, team_id):
     event = entry["current_event"]
     picks_data = session.get(f"{BASE_URL}/entry/{team_id}/event/{event}/picks/", timeout=30).json()
     return entry, event, picks_data
+
+
+def compute_free_transfers(session, team_id, current_event):
+    """Free transfers available going into `current_event`. FPL's public API has no field for
+    this directly -- confirmed by checking /entry/{id}/ and /entry/{id}/history/, neither exposes
+    it -- only the raw per-gameweek transfer counts this reconstructs it from. FPL's own rule: +1
+    free transfer each gameweek, rolling over up to a cap of 5 (so you can bank up to 4 beyond the
+    1 you'd get anyway); a gameweek played under Wildcard or Free Hit doesn't touch the running
+    count at all, since those chips give unlimited free transfers for that week only."""
+    history = session.get(f"{BASE_URL}/entry/{team_id}/history/", timeout=30).json()
+    chip_events = {c["event"] for c in history.get("chips", []) if c.get("name") in ROLLOVER_CHIPS}
+
+    free_transfers = 1
+    for gw in sorted(history["current"], key=lambda e: e["event"]):
+        event = gw["event"]
+        if event < FIRST_TRANSFER_EVENT or event >= current_event or event in chip_events:
+            continue
+        remaining = max(0, free_transfers - gw["event_transfers"])
+        free_transfers = min(FREE_TRANSFER_CAP, remaining + 1)
+    return free_transfers
 
 
 def pick_best_lineup(players):
@@ -183,6 +207,16 @@ def main():
     all_players = load_all_players()
     by_id = {p["id"]: p for p in all_players}
 
+    # entry["current_event"] (used for `event` above) is Nathan's last-LOCKED squad snapshot --
+    # it doesn't advance until a new gameweek's deadline actually passes, so right up until then
+    # it still points at the gameweek that just finished. Free-transfer planning needs the next
+    # gameweek transfers would actually apply to, which is exactly what predictions.csv's own
+    # weeks_ahead==1 already resolves to (fpl_ml_model.py's own deadline-aware target event).
+    raw_predictions = pd.read_csv(PREDICTIONS_FILE)
+    upcoming_event = int(raw_predictions.loc[raw_predictions["weeks_ahead"] == 1, "event"].iloc[0])
+    free_transfers = compute_free_transfers(session, MY_TEAM_ID, upcoming_event)
+    next_week_free_transfers_if_hold = min(FREE_TRANSFER_CAP, free_transfers + 1)
+
     fpl_elements = {e["id"]: e for e in session.get(f"{BASE_URL}/bootstrap-static/", timeout=30).json()["elements"]}
     current_ids_raw = [pick["element"] for pick in picks_data["picks"]]
     missing = [pid for pid in current_ids_raw if pid not in by_id]
@@ -201,12 +235,20 @@ def main():
     top_total = starting_total(top_team)
     rating_pct = round(100 * current_total / top_total, 1) if top_total else None
 
+    # Check using 1 transfer through one hit beyond the free allowance -- e.g. with 2 free
+    # transfers, that's 1, 2 (both free) and 3 (1 hit), so the -4 cost of overspending is visible
+    # right next to the free options rather than assumed away.
+    transfer_counts = list(range(1, free_transfers + 2))
     transfer_scenarios = {}
-    for n in TRANSFER_OPTIONS:
+    best_net_gain = 0.0  # 0 transfers ("hold") is always a valid baseline with zero net gain
+    recommended_transfers = 0
+    for n in transfer_counts:
+        hit_cost = max(0, n - free_transfers) * HIT_COST_PER_TRANSFER
         ranked = pick_top_transfer_scenarios(current_ids, current_value, bank_raw, all_players, n, current_total, TOP_N_OPTIONS)
         scenario_list = []
-        for squad in ranked:
+        for rank, squad in enumerate(ranked):
             total = starting_total(squad)
+            net_gain = round(total - current_total - hit_cost, 2)
             new_ids = {p["id"] for p in squad}
             transferred_out = sorted((by_id[pid] for pid in current_ids if pid not in new_ids), key=lambda p: p["position"])
             transferred_in = sorted((p for p in squad if p["id"] not in current_ids), key=lambda p: p["position"])
@@ -214,9 +256,14 @@ def main():
                 "squad": squad,
                 "predicted_total": total,
                 "rating_pct": round(100 * total / top_total, 1) if top_total else None,
+                "hit_cost": hit_cost,
+                "net_gain": net_gain,
                 "transfers_out": transferred_out,
                 "transfers_in": transferred_in,
             })
+            if rank == 0 and net_gain > best_net_gain:
+                best_net_gain = net_gain
+                recommended_transfers = n
         transfer_scenarios[str(n)] = scenario_list
 
     # Deliberately NOT saving manager_name/team_name into the output file -- this JSON gets baked
@@ -226,9 +273,14 @@ def main():
     output = {
         "team_id": MY_TEAM_ID,
         "event": event,
+        "upcoming_event": upcoming_event,
         "horizon_gameweeks": HORIZON_GAMEWEEKS,
         "bank": bank_raw / 10,
         "team_value": team_value_raw / 10,
+        "free_transfers": free_transfers,
+        "next_week_free_transfers_if_hold": next_week_free_transfers_if_hold,
+        "recommended_transfers": recommended_transfers,
+        "recommended_net_gain": best_net_gain,
         "current_squad": current_lineup,
         "current_predicted_total": current_total,
         "top_team_predicted_total": top_total,
@@ -238,17 +290,32 @@ def main():
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
 
-    print(f"{manager_name}'s team \"{entry.get('name')}\" (GW{event}, {HORIZON_GAMEWEEKS}-GW outlook): "
+    print(f"{manager_name}'s team \"{entry.get('name')}\" going into GW{upcoming_event} "
+          f"({HORIZON_GAMEWEEKS}-GW outlook, {free_transfers} free transfer(s) available): "
           f"{current_total} pts predicted ({rating_pct}% of the model's own best-possible {top_total}-pt squad)")
-    for n in TRANSFER_OPTIONS:
+    for n in transfer_counts:
         options = transfer_scenarios[str(n)]
+        hit_note = "" if n <= free_transfers else f", includes a {(n - free_transfers) * HIT_COST_PER_TRANSFER}-pt hit"
         if not options:
-            print(f"  With {n} transfer(s): no changes beat your current squad")
+            print(f"  With {n} transfer(s){hit_note}: no changes beat your current squad")
             continue
-        print(f"  With {n} transfer(s), top {len(options)} option(s):")
+        print(f"  With {n} transfer(s){hit_note}, top {len(options)} option(s):")
         for rank, s in enumerate(options, start=1):
             moves = ", ".join(f"{o['web_name']} -> {i['web_name']}" for o, i in zip(s["transfers_out"], s["transfers_in"]))
-            print(f"    {rank}. {s['predicted_total']} pts ({s['rating_pct']}%) -- {moves}")
+            print(f"    {rank}. {s['predicted_total']} pts, net {s['net_gain']:+.2f} after any hit ({s['rating_pct']}%) -- {moves}")
+
+    if recommended_transfers == 0:
+        print(f"\nRecommendation: HOLD. No transfer combination found nets a real gain over your "
+              f"current squad -- banking would take you to {next_week_free_transfers_if_hold} free "
+              f"transfer(s) next week.")
+    else:
+        print(f"\nRecommendation: use {recommended_transfers} transfer(s) now for a net gain of "
+              f"+{best_net_gain:.2f} pts over {HORIZON_GAMEWEEKS} GWs.")
+    print(
+        "(This only measures the cost of waiting -- the predicted points forgone by not "
+        "transferring now -- not the value of waiting, which depends on information the model "
+        "doesn't have yet: a price rise, a fitness update, a fixture swing further out.)"
+    )
     print(f"Saved {OUTPUT_FILE}")
 
 
