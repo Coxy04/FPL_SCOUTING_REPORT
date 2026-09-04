@@ -35,7 +35,7 @@ from pick_team import (
 MY_TEAM_ID = 4340534
 PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 OUTPUT_FILE = Path("my_fpl_team.json")
-TOP_N_OPTIONS = 3
+TOP_N_OPTIONS = 5
 # This is a multi-week planning decision (use transfers now vs. bank them), not a single-gameweek
 # call -- 5 gameweeks is deliberately the outlook here (wider than "My Team"'s own rating, which
 # stayed at 3): long enough to judge whether a transfer's benefit holds up, short enough that the
@@ -100,6 +100,39 @@ def fetch_current_squad(session, team_id):
     event = entry["current_event"]
     picks_data = session.get(f"{BASE_URL}/entry/{team_id}/event/{event}/picks/", timeout=30).json()
     return entry, event, picks_data
+
+
+def compute_selling_prices(session, team_id, picks, elements_by_id):
+    """What each owned player would ACTUALLY sell for, which is not their listed price.
+
+    FPL returns the purchase price plus half of any subsequent rise, rounded down to 0.1m; a price
+    fall is absorbed in full. Valuing a squad at listed prices therefore overstates the budget and
+    lets the optimiser propose transfers that don't actually fit -- the failure this was added to
+    fix, after a recommended move turned out to be unaffordable in the app.
+
+    `selling_price` exists only on FPL's authenticated /my-team/ endpoint, but it's derivable from
+    public data: cost_change_start gives the move since the season began, so a player never
+    transferred in was bought at now_cost - cost_change_start, and /entry/{id}/transfers/ carries
+    element_in_cost for anyone bought since (latest purchase wins if bought more than once)."""
+    transfers = session.get(f"{BASE_URL}/entry/{team_id}/transfers/", timeout=30).json()
+    purchase_by_element = {}
+    for transfer in sorted(transfers, key=lambda t: t.get("event", 0)):
+        purchase_by_element[transfer["element_in"]] = transfer["element_in_cost"]
+
+    selling = {}
+    for pick in picks:
+        element_id = pick["element"]
+        element = elements_by_id.get(element_id)
+        if element is None:
+            continue
+        now_cost = element["now_cost"]
+        purchase = purchase_by_element.get(element_id, now_cost - element.get("cost_change_start", 0))
+        profit = max(0, now_cost - purchase)
+        # The min() is the loss half of the rule and is not redundant: a player whose price has
+        # FALLEN has zero profit, so `purchase + 0` would hand back the original (higher) price and
+        # invent money. Le Fee, bought at 6.0 and now 5.9, sells at 5.9.
+        selling[element_id] = min(now_cost, purchase + profit // 2)
+    return selling
 
 
 def compute_free_transfers(session, team_id, current_event):
@@ -270,7 +303,13 @@ def main():
               f"(likely a blank gameweek or unmatched fixture) -- excluded from optimization: {names}")
     current_ids = {pid for pid in current_ids_raw if pid in by_id}
     current_players = [by_id[pid] for pid in current_ids]
-    current_value = sum(p["now_cost"] for p in current_players)
+    # Budget must be built from what these players would actually SELL for, not their listed
+    # prices -- see compute_selling_prices. Using listed prices overstates the budget and lets the
+    # optimiser propose transfers that don't fit in the app.
+    selling_prices = compute_selling_prices(session, MY_TEAM_ID, picks_data["picks"], fpl_elements)
+    current_value = sum(selling_prices.get(pid, by_id[pid]["now_cost"]) for pid in current_ids)
+    listed_value = sum(p["now_cost"] for p in current_players)
+    selling_shortfall = listed_value - current_value
 
     current_lineup = pick_best_lineup(current_players)
     current_total = starting_total(current_lineup)
@@ -365,6 +404,8 @@ def main():
         "horizon_gameweeks": HORIZON_GAMEWEEKS,
         "bank": bank_raw / 10,
         "team_value": team_value_raw / 10,
+        "squad_selling_value": current_value / 10,
+        "selling_price_shortfall": selling_shortfall / 10,
         "free_transfers": free_transfers,
         "transfer_gain_shrinkage": TRANSFER_GAIN_SHRINKAGE,
         "transfer_gain_shrinkage_by_position": TRANSFER_GAIN_SHRINKAGE_BY_POSITION,
@@ -388,6 +429,9 @@ def main():
 
     print(f"{manager_name}'s team \"{entry.get('name')}\" going into GW{upcoming_event} "
           f"({free_transfers} free transfer(s) available)")
+    print(f"  Budget: £{bank_raw / 10:.1f}m bank + £{current_value / 10:.1f}m squad selling value"
+          + (f" (£{selling_shortfall / 10:.1f}m less than listed prices, per FPL's sell-at-half-the-rise rule)"
+             if selling_shortfall else " (no player has risen yet, so selling = listed)"))
     print(f"  GW{upcoming_event} only: {next_gw_total} pts predicted from the best XI this week")
     print(f"  {HORIZON_GAMEWEEKS}-GW outlook: {current_total} pts "
           f"({rating_pct}% of the model's own best-possible {top_total}-pt squad)")

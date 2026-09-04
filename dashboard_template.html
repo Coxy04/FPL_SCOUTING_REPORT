@@ -1050,6 +1050,7 @@ function renderMyTeam() {
       <div><div class="big">${fmt(MY_TEAM.rating_pct, 1)}%</div><div class="label">Rating vs. model's best, ${horizon} GW</div></div>
       <div><div class="big">${freeTransfers}</div><div class="label">Free transfers available</div></div>
       <div><div class="big">${fmtCost(MY_TEAM.bank * 10)}</div><div class="label">In the bank</div></div>
+      <div><div class="big">${fmtCost(MY_TEAM.squad_selling_value * 10)}</div><div class="label">Squad selling value${MY_TEAM.selling_price_shortfall ? ` (${fmtCost(MY_TEAM.selling_price_shortfall * 10)} under listed)` : ""}</div></div>
     </div>
   `;
 
