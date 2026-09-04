@@ -94,6 +94,11 @@ FREE_TRANSFER_CAP = 5
 FIRST_TRANSFER_EVENT = 2  # GW1 is the initial squad -- no transfers possible, nothing to bank yet
 ROLLOVER_CHIPS = {"wildcard", "freehit"}
 
+# Flag the most- and least-backed decile of THIS week's players, rather than an absolute
+# net-transfer rate. See compute_price_pressure for why the absolute version had to be abandoned.
+PRICE_PRESSURE_DECILE = 0.10
+PRICE_MIN_OWNERS = 1000
+
 
 def fetch_current_squad(session, team_id):
     entry = session.get(f"{BASE_URL}/entry/{team_id}/", timeout=30).json()
@@ -133,6 +138,68 @@ def compute_selling_prices(session, team_id, picks, elements_by_id):
         # invent money. Le Fee, bought at 6.0 and now 5.9, sells at 5.9.
         selling[element_id] = min(now_cost, purchase + profit // 2)
     return selling
+
+
+def compute_price_pressure(bootstrap):
+    """Flags who the market is about to reprice, so a transfer can be timed rather than just chosen.
+
+    FPL moves a player's price off net transfers, so net transfer flow LEADS the price. Measured on
+    the 2025-26 archive (ablation_price_trajectory.py), rate = transfers_balance / selected predicts
+    the NEXT gameweek's price move with correlation 0.31 and a cleanly monotonic decile curve.
+
+    Ranks within the current gameweek rather than against an absolute rate, which is not a detail.
+    An absolute cut was tried first and had to be thrown out: transfer churn collapses as a season
+    settles, so the same +/-0.06 threshold that flags a sane 8% of players as falling in GW20 flags
+    68% of them in GW3. A flag that fires on two thirds of the league says nothing. Ranking within
+    the week is self-normalising, and the predictive power survives it in every block of the season:
+
+        top decile of the week    -> 12-16% rise next GW vs a ~2% base rate, 0.4% fall
+        bottom decile of the week -> 15-26% fall next GW vs a 2.5-11.5% base rate, 0.3% rise
+
+    Wrong-direction rates under 0.5% are what make this worth surfacing: the flag is rarely
+    backwards, it just won't catch every real move.
+
+    Emphatically NOT a points signal. The same ablation found price momentum worth +0.1% MAE --
+    i.e. nothing -- as a model feature, and a plain ownership control beat both trajectory variants.
+    The market predicts its own prices, not the football, so this belongs on the timing of a move
+    that was already chosen on merit, never on the choice itself.
+
+    Two caveats. (1) transfers_*_event is the CURRENT window still filling up, while the calibration
+    used complete windows; ranking makes this far less damaging than it would be for an absolute cut,
+    since every player is equally under-counted, but the ordering can still be rough right after a
+    deadline. (2) FPL reprices daily, so a weekly-resolution rate is a proxy for a faster process."""
+    total_managers = bootstrap["total_players"]
+    rates = {}
+    for element in bootstrap["elements"]:
+        owners = (float(element["selected_by_percent"]) / 100) * total_managers
+        if owners < PRICE_MIN_OWNERS:
+            # A near-unowned player's ratio is dominated by its tiny denominator -- the calibration
+            # excluded these for the same reason rather than emitting confident noise.
+            continue
+        rates[element["id"]] = (element["transfers_in_event"] - element["transfers_out_event"]) / owners
+
+    ordered = sorted(rates.values())
+    if ordered:
+        rise_cut = ordered[int(len(ordered) * (1 - PRICE_PRESSURE_DECILE))]
+        fall_cut = ordered[int(len(ordered) * PRICE_PRESSURE_DECILE)]
+    else:
+        rise_cut = fall_cut = 0.0
+
+    pressure = {}
+    for element in bootstrap["elements"]:
+        rate = rates.get(element["id"])
+        direction = None
+        if rate is not None:
+            if rate >= rise_cut:
+                direction = "rising"
+            elif rate <= fall_cut:
+                direction = "falling"
+        pressure[element["id"]] = {
+            "rate": round(rate, 4) if rate is not None else None,
+            "direction": direction,
+            "change_this_gw": element["cost_change_event"],
+        }
+    return pressure
 
 
 def compute_free_transfers(session, team_id, current_event):
@@ -294,7 +361,9 @@ def main():
     free_transfers = compute_free_transfers(session, MY_TEAM_ID, upcoming_event)
     next_week_free_transfers_if_hold = min(FREE_TRANSFER_CAP, free_transfers + 1)
 
-    fpl_elements = {e["id"]: e for e in session.get(f"{BASE_URL}/bootstrap-static/", timeout=30).json()["elements"]}
+    bootstrap = session.get(f"{BASE_URL}/bootstrap-static/", timeout=30).json()
+    fpl_elements = {e["id"]: e for e in bootstrap["elements"]}
+    price_pressure = compute_price_pressure(bootstrap)
     current_ids_raw = [pick["element"] for pick in picks_data["picks"]]
     missing = [pid for pid in current_ids_raw if pid not in by_id]
     if missing:
@@ -367,8 +436,10 @@ def main():
                 "shrinkage_applied": round(shrink, 3),
                 "expected_gain": round(expected_gain, 2),
                 "net_gain": net_gain,
-                "transfers_out": transferred_out,
-                "transfers_in": transferred_in,
+                # Price pressure is a TIMING note on an already-chosen move, never a reason to
+                # choose it -- it predicts the market, not the football (see compute_price_pressure).
+                "transfers_out": [{**p, "price_pressure": price_pressure.get(p["id"])} for p in transferred_out],
+                "transfers_in": [{**p, "price_pressure": price_pressure.get(p["id"])} for p in transferred_in],
             })
         # Re-rank by net gain, not by raw predicted total. Position-aware shrinkage means a
         # slightly-lower-raw option with a defender-heavy mix can genuinely beat a higher-raw one,
@@ -416,7 +487,8 @@ def main():
         # current_squad drives the pitch view and is deliberately the NEXT-GAMEWEEK lineup, since
         # that's the decision it informs. horizon_lineup records which it is so the dashboard can
         # label it without hardcoding an assumption.
-        "current_squad": next_gw_lineup or current_lineup,
+        "current_squad": [{**p, "price_pressure": price_pressure.get(p["id"])}
+                          for p in (next_gw_lineup or current_lineup)],
         "horizon_lineup": HORIZON_LINEUP,
         "next_gw_predicted_total": next_gw_total,
         "current_predicted_total": current_total,
@@ -464,6 +536,22 @@ def main():
     else:
         print(f"\nRecommendation: use {recommended_transfers} transfer(s) now for a net gain of "
               f"+{best_net_gain:.2f} pts over {HORIZON_GAMEWEEKS} GWs.")
+    rising = sorted((p for p in all_players
+                     if (price_pressure.get(p["id"]) or {}).get("direction") == "rising"),
+                    key=lambda p: -price_pressure[p["id"]]["rate"])[:8]
+    falling_mine = [p for p in current_players
+                    if (price_pressure.get(p["id"]) or {}).get("direction") == "falling"]
+    print("\nPrice timing -- bottom/top decile of this week's net transfer flow. Predicts the "
+          "market, NOT points (see compute_price_pressure):")
+    if falling_mine:
+        names = ", ".join(f"{p['web_name']} ({price_pressure[p['id']]['rate']:+.2f})" for p in falling_mine)
+        print(f"  Yours being sold off -- ~21% fall next GW vs ~6% base: {names}")
+    else:
+        print("  None of your players are in the week's most-sold decile.")
+    if rising:
+        names = ", ".join(f"{p['web_name']} ({price_pressure[p['id']]['rate']:+.2f})" for p in rising)
+        print(f"  Most bought -- ~14% rise next GW vs ~2% base: {names}")
+
     if hit_rejected:
         print(f"A hit-paying option scored higher on the raw numbers but by less than "
               f"{HIT_DECISION_MARGIN:.0f} pts, which is inside what the gain calibration can "

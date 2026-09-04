@@ -346,6 +346,9 @@
     display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
     background: var(--critical); color: #fff; border-radius: 4px; padding: 1px 6px; vertical-align: middle;
   }
+  .price-tag { font-size: 9.5px; vertical-align: middle; cursor: help; }
+  .price-up { color: #16a34a; }
+  .price-down { color: #dc2626; }
   .transfer-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
   .transfer-option-head { font-size: 12.5px; font-weight: 700; color: var(--ink-secondary); margin: 4px 0; }
   .transfer-math { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--ink-muted); margin-bottom: 4px; }
@@ -937,7 +940,7 @@ const playerCard = p => `
       : ""}
     <span class="name">${esc(p.web_name)}</span>
     ${opponentTag(p)}
-    <span class="cost">${fmtCost(p.now_cost)}</span>
+    <span class="cost">${fmtCost(p.now_cost)}${priceTag(p)}</span>
     <span class="pts">${fmt(p.predicted_points)} pts</span>
   </div>
 `;
@@ -947,10 +950,19 @@ const benchChip = p => `
     ${p.team_code ? `<img src="${shirtUrl(p.team_code)}" alt="${esc(p.team_name)} shirt" loading="lazy" style="width:20px;height:auto;" />` : ""}
     <span>${esc(p.web_name)}</span>
     ${opponentTag(p)}
-    <span class="cost">${fmtCost(p.now_cost)}</span>
+    <span class="cost">${fmtCost(p.now_cost)}${priceTag(p)}</span>
     <span class="pts">${fmt(p.predicted_points)} pts</span>
   </div>
 `;
+// Price-timing tag. Deliberately a small annotation and never part of the ranking: net transfer
+// flow predicts FPL's own repricing well (5-8x lift on rises) but was measured worthless as a
+// points predictor, so it can tell you WHEN to make a move, never WHICH move to make.
+const priceTag = p => {
+  const d = p.price_pressure && p.price_pressure.direction;
+  if (d === "rising") return ` <span class="price-tag price-up" title="Top decile of this week's net transfers in — ~14% chance of a price rise next gameweek vs ~2% base rate. Buy sooner rather than later.">▲</span>`;
+  if (d === "falling") return ` <span class="price-tag price-down" title="Bottom decile of this week's net transfers — ~21% chance of a price fall next gameweek vs ~6% base rate. Selling later costs you value.">▼</span>`;
+  return "";
+};
 const posOrder = { GK: 0, DEF: 1, MID: 2, FWD: 3 };
 const byPos = arr => [...arr].sort((a, b) => posOrder[a.position] - posOrder[b.position] || b.predicted_points - a.predicted_points);
 const buildPitchHtml = starters => `
@@ -1086,9 +1098,9 @@ function renderMyTeam() {
         const inP = s.transfers_in[i];
         return `
           <div class="transfer-row">
-            <span class="transfer-out">${esc(out.web_name)} <span class="cost">${fmtCost(out.now_cost)}</span></span>
+            <span class="transfer-out">${esc(out.web_name)} <span class="cost">${fmtCost(out.now_cost)}</span>${priceTag(out)}</span>
             <span class="transfer-arrow">→</span>
-            <span class="transfer-in">${esc(inP.web_name)} <span class="cost">${fmtCost(inP.now_cost)}</span></span>
+            <span class="transfer-in">${esc(inP.web_name)} <span class="cost">${fmtCost(inP.now_cost)}</span>${priceTag(inP)}</span>
           </div>
         `;
       }).join("");
