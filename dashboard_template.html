@@ -1150,9 +1150,14 @@ function renderMyTeam() {
     }).join("");
     const caveat = MY_TEAM.hold_uncalibrated
       ? `<div class="exp-empty" style="margin-top:8px;">* Banking options are <b>not discounted yet</b> and are excluded from the recommendation.
-           A deferred gain rests on an assumption an immediate move never makes — that today's view of next week survives to next week.
-           Until <code>calibrate_hold_value.py</code> has measured that, crediting these in full would swap the old bias towards acting for an equally unfounded bias towards waiting.</div>`
-      : "";
+           A deferred gain rests on an assumption an immediate move never makes — that today's view of next week survives to next week.</div>`
+      : `<div class="exp-empty" style="margin-top:8px;">
+           Banked gains carry an extra <b>×${MY_TEAM.hold_shrinkage}</b> deferral discount on top of position shrinkage, because a deferred gain
+           rests on an assumption an immediate move never makes — that today's view of next week survives to next week. Measured over 440 paired
+           replays of last season in which both arms spend the same transfers over the same weeks: deferred gains realised 0.53 of their projection
+           against 0.71 for immediate ones, and harsher still in the low-gain range this tool usually operates in.
+           ${MY_TEAM.bank_rejected_as_marginal ? `<br><br><b>Banking ranked highest here but by less than ${fmt(MY_TEAM.hold_decision_margin, 0)} pts</b>, which is inside what the calibration can resolve
+             (measured edge +0.70, 90% CI [−0.99, +2.24], banking won 49% of paired replays) — so it is not recommended. On these numbers acting and banking are a genuine tie.` : ""}</div>`;
     return `
       <div class="team-row-label" style="margin-top:24px;">Use them or bank them
         <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- every option scored as extra points over the same next ${horizon} gameweeks, so waiting is charged for the week of gain it costs</span></div>

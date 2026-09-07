@@ -1,0 +1,40 @@
+Building archive feature rows...
+GW10: done (40 scenarios)
+GW12: done (40 scenarios)
+GW14: done (40 scenarios)
+GW16: done (40 scenarios)
+GW18: done (40 scenarios)
+GW20: done (40 scenarios)
+GW22: done (40 scenarios)
+GW24: done (40 scenarios)
+GW26: done (40 scenarios)
+GW28: done (40 scenarios)
+GW30: done (40 scenarios)
+
+Saved 440 paired scenarios to hold_calibration_scenarios.csv
+
+440 pairs across 11 decision gameweeks, 5-GW evaluation window. Within each pair both arms spend the same number of transfers over the same weeks and end with none banked -- only the timing differs.
+
+REALISATION -- how much of each arm's predicted gain actually materialised:
+Arm                       n     Mean predicted   Mean realised   Shrinkage   
+spend now                 440   19.63            14.03           0.71        
+bank, then bundle         440   27.99            14.73           0.53        
+
+The hold shrinkage is the number the live tool needs: it is what a deferred gain computed from TODAY's model on a shifted window is actually worth once next week's information, churn and price drift have had their say.
+
+HEAD TO HEAD (paired on squad and window, so most of the variance differences out):
+Situation                         n     Spend     Hold      Hold edge   90% CI              Hold wins 
+1 FT in hand, bank 1wk -> 2       110   9.92      12.78     +2.86       [+0.3, +5.4]        53        %
+1 FT in hand, bank 2wk -> 3       110   13.90     13.29     -0.61       [-4.2, +3.0]        49        %
+2 FT in hand, bank 1wk -> 3       110   14.66     14.76     +0.10       [-2.9, +3.0]        43        %
+2 FT in hand, bank 2wk -> 4       110   17.65     18.09     +0.45       [-3.3, +4.1]        51        %
+
+Overall hold edge: +0.70 pts (90% CI [-0.99, +2.24], holding won 49% of pairs)
+
+By how good the SPEND-NOW option looked at decision time (this is the decision rule):
+Spend-now predicted   n     Hold edge   90% CI              Hold wins 
+6-10 pts              44    +0.84       [-3.5, +5.1]        41        %
+10-20 pts             206   +0.84       [-1.5, +3.1]        53        %
+20+ pts               180   +1.09       [-1.6, +3.7]        48        %
+
+A positive hold edge means banking beat spending, on real points, over the same gameweeks with the same number of transfers. Read the CIs before believing any single row: these are noisy paired differences and the point estimates move around a lot.

@@ -102,13 +102,26 @@ PRICE_MIN_OWNERS = 1000
 # How many weeks of banking to evaluate. Capped at 2 because it leans on predictions further out,
 # and the horizon stops at 5 precisely because they stop being trustworthy past that.
 MAX_BANK_WEEKS = 2
-# How much of a DEFERRED gain actually materialises. Distinct from TRANSFER_GAIN_SHRINKAGE: a
-# banked move carries the same optimiser's curse PLUS an assumption an immediate move never makes,
-# that today's view of next week survives to next week. Left as None until calibrate_hold_value.py
-# has measured it -- while it is None the banking options are shown but never recommended, because
-# crediting them with an unmeasured shifted-window number would just swap the old bias towards
-# acting for an equally unfounded bias towards waiting.
-HOLD_GAIN_SHRINKAGE = None
+# EXTRA discount on a deferred gain, on top of the per-position shrinkage every move already gets.
+# A banked move carries the same optimiser's curse as an immediate one PLUS an assumption an
+# immediate move never makes: that today's view of next week survives to next week.
+#
+# calibrate_hold_value.py measured it on 440 paired scenarios where both arms spend the SAME number
+# of transfers over the SAME weeks and end with none banked, so only the timing differs. Deferred
+# gains realised 0.53 of their projection against 0.71 for immediate ones -- a relative 0.75.
+#
+# But the headline is not the number to ship, because the calibration mostly measures a regime this
+# tool is rarely in. Its mean raw gain is +19.6 and only 17% of pairs sit below +11, while a typical
+# live week here offers +5 to +11. In that low-gain slice the relative rate is far harsher (0.35,
+# n=76) and banking actually LOST by 1.4 pts. So this is partially pooled 50/50 between the two,
+# exactly as TRANSFER_GAIN_SHRINKAGE_BY_POSITION is, rather than trusting either a noisy 76-scenario
+# slice or a headline measured somewhere else: 0.5*0.35 + 0.5*0.75 = 0.55.
+HOLD_GAIN_SHRINKAGE = 0.55
+# Banking must clear the best act-now option by this margin before it is recommended. The measured
+# hold edge is +0.70 pts with a 90% CI of [-0.99, +2.24] -- i.e. statistically indistinguishable
+# from zero, and holding won only 49% of pairs. A sub-2-point edge for banking is therefore not an
+# edge at all, it is the width of the measurement. Same reasoning as HIT_DECISION_MARGIN.
+HOLD_DECISION_MARGIN = 2.0
 
 
 def fetch_current_squad(session, team_id):
@@ -561,10 +574,18 @@ def main():
     # Only let banking change the recommendation once its discount has actually been measured.
     # Until then it is reported alongside, clearly marked, but the recommendation stays where the
     # evidence is -- the same standard the -4 hit was held to.
-    recommended_plan = None
-    if bank_plans:
-        eligible = [p for p in bank_plans if p["calibrated"]]
-        recommended_plan = eligible[0] if eligible else None
+    recommended_plan = act_now_best
+    bank_rejected_as_marginal = False
+    if hold_best and act_now_best and hold_best["net_gain"] > act_now_best["net_gain"]:
+        # Ranking first is not enough. The measured edge for banking is indistinguishable from zero,
+        # so it has to clear acting by more than the measurement itself can resolve before the
+        # recommendation moves -- otherwise the tool would just be reading its own noise.
+        if hold_best["net_gain"] - act_now_best["net_gain"] >= HOLD_DECISION_MARGIN:
+            recommended_plan = hold_best
+        else:
+            bank_rejected_as_marginal = True
+    elif hold_best and not act_now_best:
+        recommended_plan = hold_best
     hold_uncalibrated = HOLD_GAIN_SHRINKAGE is None and hold_best is not None
 
     # Deliberately NOT saving manager_name/team_name into the output file -- this JSON gets baked
@@ -591,6 +612,8 @@ def main():
         "recommended_plan": recommended_plan,
         "hold_shrinkage": HOLD_GAIN_SHRINKAGE,
         "hold_uncalibrated": hold_uncalibrated,
+        "bank_rejected_as_marginal": bank_rejected_as_marginal,
+        "hold_decision_margin": HOLD_DECISION_MARGIN,
         # current_squad drives the pitch view and is deliberately the NEXT-GAMEWEEK lineup, since
         # that's the decision it informs. horizon_lineup records which it is so the dashboard can
         # label it without hardcoding an assumption.
@@ -655,17 +678,15 @@ def main():
         flag = "" if plan["calibrated"] else " *"
         print(f"  {label:<34}{plan['raw_gain']:<+9.2f}{plan['expected_gain']:<+12.2f}"
               f"{plan['hit_cost']:<6}{plan['net_gain']:<+9.2f}{moves}{flag}")
-    if hold_uncalibrated:
-        print("  * Banking options are NOT discounted yet and are excluded from the recommendation.")
-        print("    A deferred gain assumes today's view of next week survives to next week, which "
-              "an immediate move never assumes. calibrate_hold_value.py measures that; until it "
-              "has, crediting these in full would just swap the old bias towards acting for an "
-              "equally unfounded bias towards waiting.")
-        if act_now_best and hold_best:
-            print(f"    For scale: best act-now is {act_now_best['net_gain']:+.2f}, best banked is "
-                  f"{hold_best['net_gain']:+.2f} before any deferral discount -- so banking would "
-                  f"need to realise better than "
-                  f"{act_now_best['net_gain'] / hold_best['net_gain']:.0%} of its projection to win.")
+    if not hold_uncalibrated:
+        print(f"  * Banked gains carry an extra x{HOLD_GAIN_SHRINKAGE} deferral discount on top of "
+              f"position shrinkage -- measured over 440 paired replays where both arms spend the "
+              f"same transfers over the same weeks.")
+    if bank_rejected_as_marginal and hold_best and act_now_best:
+        print(f"  Banking ranked highest ({hold_best['net_gain']:+.2f} vs {act_now_best['net_gain']:+.2f}) "
+              f"but by less than {HOLD_DECISION_MARGIN:.0f} pts, which is inside what the hold "
+              f"calibration can resolve (measured edge +0.70, 90% CI [-0.99, +2.24], banking won "
+              f"49% of pairs) -- so it is not recommended.")
 
     rising = sorted((p for p in all_players
                      if (price_pressure.get(p["id"]) or {}).get("direction") == "rising"),
