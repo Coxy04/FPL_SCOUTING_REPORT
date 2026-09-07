@@ -137,7 +137,7 @@ POSITION_MODEL_PARAMS = {
     "GK": {"n_estimators": 250, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 2.0, "half_life_days": 100000, "playing_time_denominator": 30},
     "DEF": {"n_estimators": 150, "learning_rate": 0.03, "num_leaves": 23, "max_depth": 3, "min_child_samples": 10, "reg_lambda": 8.0, "half_life_days": 365, "playing_time_denominator": 75},
     "MID": {"n_estimators": 150, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 4, "min_child_samples": 80, "reg_lambda": 1.0, "half_life_days": 100000, "playing_time_denominator": 75},
-    "FWD": {"n_estimators": 100, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 7, "min_child_samples": 30, "reg_lambda": 8.0, "half_life_days": 100000, "playing_time_denominator": 90},
+    "FWD": {"n_estimators": 100, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 3, "min_child_samples": 30, "reg_lambda": 2.0, "half_life_days": 100000, "playing_time_denominator": 90},
 }
 
 
