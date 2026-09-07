@@ -100,7 +100,7 @@ def pick_squad(players):
 DISPLAY_COLUMNS = ["team_code", "opponent_name", "opponent_short_name", "opponent_code", "was_home", "difficulty"]
 
 
-def load_nearest_players(predictions, horizon=1):
+def load_nearest_players(predictions, horizon=1, start_week=1):
     # A double gameweek gives a player two rows in the same week (one per fixture), and horizon>1
     # spans several weeks -- predicted points are summed across all of them so squad selection
     # reflects total value over the window, while the display-only fields (shirt, next opponent)
@@ -108,7 +108,8 @@ def load_nearest_players(predictions, horizon=1):
     # "what's next" is more useful there than an ambiguous multi-week aggregate. Sorting by
     # weeks_ahead before the groupby is what makes pandas's "first" aggregation reliably pick that
     # nearest fixture's row rather than depending on incidental CSV row order.
-    nearest = predictions[predictions["weeks_ahead"] <= horizon].sort_values("weeks_ahead")
+    nearest = predictions[(predictions["weeks_ahead"] <= horizon)
+                          & (predictions["weeks_ahead"] >= start_week)].sort_values("weeks_ahead")
     agg = {"predicted_points": "sum", **{c: "first" for c in DISPLAY_COLUMNS}}
     grouped = nearest.groupby(
         ["id", "web_name", "team_name", "position", "now_cost"], as_index=False

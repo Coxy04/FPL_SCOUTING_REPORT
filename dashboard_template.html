@@ -346,6 +346,13 @@
     display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
     background: var(--critical); color: #fff; border-radius: 4px; padding: 1px 6px; vertical-align: middle;
   }
+  .bank-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .bank-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--ink-secondary); padding: 6px 10px; border-bottom: 1px solid var(--rule); }
+  .bank-table td { padding: 6px 10px; border-bottom: 1px solid var(--rule); }
+  .bank-table td.num, .bank-table th.num { text-align: right; font-family: "IBM Plex Mono", monospace; }
+  .bank-table tr.bank-uncal { opacity: 0.72; }
+  .bank-star { color: var(--gold); cursor: help; font-weight: 700; }
   .price-tag { font-size: 9.5px; vertical-align: middle; cursor: help; }
   .price-up { color: #16a34a; }
   .price-down { color: #dc2626; }
@@ -1122,6 +1129,42 @@ function renderMyTeam() {
     `;
   };
 
+  // Use-them-or-bank-them. Every row is extra points over the SAME horizon, so a deferred move is
+  // charged for the week of gain it costs -- which is what makes banking comparable to acting at
+  // all. Previously holding was assumed to be worth exactly zero and could never win on merit.
+  const bankHtml = (() => {
+    const plans = MY_TEAM.bank_plans || [];
+    if (!plans.length) return "";
+    const rows = plans.slice(0, 8).map(p => {
+      const when = p.wait_weeks ? `Bank ${p.wait_weeks}wk` : "Act now";
+      const moves = p.transfers_out.map((o, i) => `${esc(o.web_name)} → ${esc(p.transfers_in[i].web_name)}`).join(", ");
+      return `
+        <tr class="${p.calibrated ? "" : "bank-uncal"}">
+          <td><b>${when}</b>, ${p.transfers} transfer${p.transfers > 1 ? "s" : ""} <span style="color:var(--ink-muted);">(${p.free_transfers_then} free)</span>${p.calibrated ? "" : ' <span class="bank-star" title="Not yet discounted for deferral risk — excluded from the recommendation">*</span>'}</td>
+          <td class="num">${fmt(p.raw_gain, 2)}</td>
+          <td class="num">${fmt(p.expected_gain, 2)}</td>
+          <td class="num">${p.hit_cost ? `<span style="color:var(--critical);">-${p.hit_cost}</span>` : "—"}</td>
+          <td class="num"><b>${p.net_gain > 0 ? "+" : ""}${fmt(p.net_gain, 2)}</b></td>
+          <td style="font-size:12px;">${moves}</td>
+        </tr>`;
+    }).join("");
+    const caveat = MY_TEAM.hold_uncalibrated
+      ? `<div class="exp-empty" style="margin-top:8px;">* Banking options are <b>not discounted yet</b> and are excluded from the recommendation.
+           A deferred gain rests on an assumption an immediate move never makes — that today's view of next week survives to next week.
+           Until <code>calibrate_hold_value.py</code> has measured that, crediting these in full would swap the old bias towards acting for an equally unfounded bias towards waiting.</div>`
+      : "";
+    return `
+      <div class="team-row-label" style="margin-top:24px;">Use them or bank them
+        <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- every option scored as extra points over the same next ${horizon} gameweeks, so waiting is charged for the week of gain it costs</span></div>
+      <div style="overflow-x:auto;">
+        <table class="bank-table">
+          <thead><tr><th>Plan</th><th class="num">Raw</th><th class="num">Discounted</th><th class="num">Hit</th><th class="num">Net</th><th>Move</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>${caveat}
+    `;
+  })();
+
   const transferCounts = Object.keys(MY_TEAM.transfer_scenarios).map(Number).sort((a, b) => a - b);
 
   content.innerHTML = `
@@ -1135,6 +1178,7 @@ function renderMyTeam() {
     <div class="transfer-plan-grid">
       ${transferCounts.map(transferCard).join("")}
     </div>
+    ${bankHtml}
   `;
 }
 

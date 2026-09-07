@@ -99,6 +99,17 @@ ROLLOVER_CHIPS = {"wildcard", "freehit"}
 PRICE_PRESSURE_DECILE = 0.10
 PRICE_MIN_OWNERS = 1000
 
+# How many weeks of banking to evaluate. Capped at 2 because it leans on predictions further out,
+# and the horizon stops at 5 precisely because they stop being trustworthy past that.
+MAX_BANK_WEEKS = 2
+# How much of a DEFERRED gain actually materialises. Distinct from TRANSFER_GAIN_SHRINKAGE: a
+# banked move carries the same optimiser's curse PLUS an assumption an immediate move never makes,
+# that today's view of next week survives to next week. Left as None until calibrate_hold_value.py
+# has measured it -- while it is None the banking options are shown but never recommended, because
+# crediting them with an unmeasured shifted-window number would just swap the old bias towards
+# acting for an equally unfounded bias towards waiting.
+HOLD_GAIN_SHRINKAGE = None
+
 
 def fetch_current_squad(session, team_id):
     entry = session.get(f"{BASE_URL}/entry/{team_id}/", timeout=30).json()
@@ -327,9 +338,87 @@ def starting_total(squad):
     return round(sum(p["predicted_points"] * (2 if p["is_captain"] else 1) for p in squad if p["is_starter"]), 2)
 
 
-def load_all_players(horizon=HORIZON_GAMEWEEKS):
+def evaluate_bank_plans(current_ids, selling_prices, bank_raw, free_transfers):
+    """Every way of using transfers over the next few weeks, on ONE comparable scale.
+
+    This exists because the tool previously scored holding at exactly zero, so it could say "hold,
+    nothing is worth doing" but never "hold, next week is worth more" -- a move made now was
+    credited with the full horizon while the same move made a week later was credited with nothing.
+    Banking pays through two mechanisms that a zero can't represent: a week more information, and
+    BUNDLING, since some moves need several simultaneous transfers to express at all (downgrade two
+    players to fund a premium) and are unreachable with one free transfer at any price.
+
+    The trick that makes the arms comparable is the window. A move deferred by w weeks is valued
+    over weeks w+1..HORIZON only -- the weeks you would actually own the player. The weeks before
+    that are identical under either choice (you field the same squad), so they cancel, and both
+    numbers mean the same thing: extra points over the next HORIZON gameweeks versus doing nothing.
+    That cancellation is why the earlier horizon asymmetry disappears rather than being patched
+    over: waiting is now charged for the week of gain it actually costs."""
+    plans = []
+    for wait in range(MAX_BANK_WEEKS + 1):
+        players = load_all_players(start_week=wait + 1)
+        by_id = {p["id"]: p for p in players}
+        ids = {pid for pid in current_ids if pid in by_id}
+        if len(ids) < len(current_ids):
+            continue
+        base = starting_total(pick_best_lineup([by_id[pid] for pid in ids]))
+        value = sum(selling_prices.get(pid, by_id[pid]["now_cost"]) for pid in ids)
+        free_then = min(FREE_TRANSFER_CAP, free_transfers + wait)
+        for k in range(1, free_then + 2):
+            # Top-N then re-rank by NET, not the single raw optimum. Taking the MILP's highest-raw
+            # squad here silently biased the whole comparison: position shrinkage varies enough
+            # (FWD 0.37 vs DEF 0.78) that the highest-raw move is routinely not the highest-net one,
+            # and act-now was being under-reported at +2.35 against its true +3.60 -- an error
+            # pointing squarely in favour of banking, the exact thing this function must not do.
+            candidates = pick_top_transfer_scenarios(
+                ids, value, bank_raw, players, k, base, TOP_N_OPTIONS
+            )
+            scored = []
+            for squad in candidates:
+                new_ids = {p["id"] for p in squad}
+                incoming = sorted((p for p in squad if p["id"] not in ids), key=lambda p: p["position"])
+                if not incoming:
+                    continue
+                outgoing = sorted((by_id[pid] for pid in ids if pid not in new_ids),
+                                  key=lambda p: p["position"])
+                raw_gain = starting_total(pick_best_lineup([by_id[p["id"]] for p in squad])) - base
+                rates = [TRANSFER_GAIN_SHRINKAGE_BY_POSITION.get(p["position"], TRANSFER_GAIN_SHRINKAGE)
+                         for p in incoming]
+                shrink = sum(rates) / len(rates)
+                scored.append((raw_gain * shrink, raw_gain, shrink, incoming, outgoing))
+            if not scored:
+                continue
+            expected, raw_gain, shrink, incoming, outgoing = max(scored, key=lambda x: x[0])
+            # A deferred gain gets a SECOND discount, because it rests on an assumption an
+            # immediate move doesn't make: that today's view of next week survives to next week.
+            # Until that is measured the plan is still shown, but flagged uncalibrated and kept out
+            # of the recommendation.
+            if wait:
+                expected *= HOLD_GAIN_SHRINKAGE if HOLD_GAIN_SHRINKAGE is not None else 1.0
+            hit_cost = max(0, k - free_then) * HIT_COST_PER_TRANSFER
+            plans.append({
+                "wait_weeks": wait,
+                "transfers": len(incoming),
+                "free_transfers_then": free_then,
+                "raw_gain": round(raw_gain, 2),
+                "shrinkage_applied": round(shrink, 3),
+                "hold_shrinkage_applied": HOLD_GAIN_SHRINKAGE if wait else None,
+                "expected_gain": round(expected, 2),
+                "hit_cost": hit_cost,
+                "net_gain": round(expected - hit_cost, 2),
+                "calibrated": (not wait) or HOLD_GAIN_SHRINKAGE is not None,
+                "transfers_in": [{"id": p["id"], "web_name": p["web_name"], "position": p["position"],
+                                  "now_cost": p["now_cost"]} for p in incoming],
+                "transfers_out": [{"id": p["id"], "web_name": p["web_name"], "position": p["position"],
+                                   "now_cost": p["now_cost"]} for p in outgoing],
+            })
+    plans.sort(key=lambda p: p["net_gain"], reverse=True)
+    return plans
+
+
+def load_all_players(horizon=HORIZON_GAMEWEEKS, start_week=1):
     predictions = pd.read_csv(PREDICTIONS_FILE)
-    nearest = load_nearest_players(predictions, horizon=horizon)
+    nearest = load_nearest_players(predictions, horizon=horizon, start_week=start_week)
     columns = ["id", "web_name", "team_name", "position", "now_cost", "predicted_points"] + DISPLAY_COLUMNS
     players = nearest[columns].to_dict("records")
     for p in players:
@@ -464,6 +553,20 @@ def main():
         recommended_transfers = best_free_transfers
         best_net_gain = best_free_gain
 
+    # Banking as a first-class option, valued on the same scale as acting now rather than assumed
+    # to be worth zero. See evaluate_bank_plans.
+    bank_plans = evaluate_bank_plans(current_ids, selling_prices, bank_raw, free_transfers)
+    act_now_best = next((p for p in bank_plans if p["wait_weeks"] == 0), None)
+    hold_best = next((p for p in bank_plans if p["wait_weeks"] > 0), None)
+    # Only let banking change the recommendation once its discount has actually been measured.
+    # Until then it is reported alongside, clearly marked, but the recommendation stays where the
+    # evidence is -- the same standard the -4 hit was held to.
+    recommended_plan = None
+    if bank_plans:
+        eligible = [p for p in bank_plans if p["calibrated"]]
+        recommended_plan = eligible[0] if eligible else None
+    hold_uncalibrated = HOLD_GAIN_SHRINKAGE is None and hold_best is not None
+
     # Deliberately NOT saving manager_name/team_name into the output file -- this JSON gets baked
     # into a public GitHub Pages dashboard, and a real name in a public git history is effectively
     # permanent. Fine to print to the console for a local sanity check, not fine to publish.
@@ -484,6 +587,10 @@ def main():
         "recommended_transfers": recommended_transfers,
         "recommended_net_gain": best_net_gain,
         "hit_rejected_as_marginal": hit_rejected,
+        "bank_plans": bank_plans,
+        "recommended_plan": recommended_plan,
+        "hold_shrinkage": HOLD_GAIN_SHRINKAGE,
+        "hold_uncalibrated": hold_uncalibrated,
         # current_squad drives the pitch view and is deliberately the NEXT-GAMEWEEK lineup, since
         # that's the decision it informs. horizon_lineup records which it is so the dashboard can
         # label it without hardcoding an assumption.
@@ -536,6 +643,30 @@ def main():
     else:
         print(f"\nRecommendation: use {recommended_transfers} transfer(s) now for a net gain of "
               f"+{best_net_gain:.2f} pts over {HORIZON_GAMEWEEKS} GWs.")
+    print()
+    print("USE THEM OR BANK THEM -- every option scored as extra points over the SAME next "
+          f"{HORIZON_GAMEWEEKS} gameweeks, so waiting is charged for the week of gain it costs:")
+    print(f"  {'Plan':<34}{'Raw':<9}{'Discounted':<12}{'Hit':<6}{'Net':<9}Move")
+    for plan in bank_plans[:8]:
+        when = "act now" if not plan["wait_weeks"] else f"bank {plan['wait_weeks']}wk"
+        label = f"{when}, {plan['transfers']} transfer(s) w/ {plan['free_transfers_then']} free"
+        moves = ", ".join(f"{o['web_name']}->{i['web_name']}"
+                          for o, i in zip(plan["transfers_out"], plan["transfers_in"]))
+        flag = "" if plan["calibrated"] else " *"
+        print(f"  {label:<34}{plan['raw_gain']:<+9.2f}{plan['expected_gain']:<+12.2f}"
+              f"{plan['hit_cost']:<6}{plan['net_gain']:<+9.2f}{moves}{flag}")
+    if hold_uncalibrated:
+        print("  * Banking options are NOT discounted yet and are excluded from the recommendation.")
+        print("    A deferred gain assumes today's view of next week survives to next week, which "
+              "an immediate move never assumes. calibrate_hold_value.py measures that; until it "
+              "has, crediting these in full would just swap the old bias towards acting for an "
+              "equally unfounded bias towards waiting.")
+        if act_now_best and hold_best:
+            print(f"    For scale: best act-now is {act_now_best['net_gain']:+.2f}, best banked is "
+                  f"{hold_best['net_gain']:+.2f} before any deferral discount -- so banking would "
+                  f"need to realise better than "
+                  f"{act_now_best['net_gain'] / hold_best['net_gain']:.0%} of its projection to win.")
+
     rising = sorted((p for p in all_players
                      if (price_pressure.get(p["id"]) or {}).get("direction") == "rising"),
                     key=lambda p: -price_pressure[p["id"]]["rate"])[:8]
