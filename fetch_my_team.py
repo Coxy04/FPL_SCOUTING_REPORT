@@ -422,7 +422,48 @@ def pick_top_transfer_scenarios(current_ids, current_value, bank, all_players, m
     return scenarios
 
 
-def pick_top_wildcard_squads(players, budget, top_n=WILDCARD_TOP_N_OPTIONS):
+def build_per_week_predictions(horizon=HORIZON_GAMEWEEKS):
+    """{week: {player_id: predicted_points}} straight from the raw predictions file -- one real
+    gameweek's own view, not the 5-week SUM `load_all_players()` hands everything else."""
+    raw = pd.read_csv(PREDICTIONS_FILE)
+    return {
+        week: raw[raw["weeks_ahead"] == week].set_index("id")["predicted_points"].to_dict()
+        for week in range(1, horizon + 1)
+    }
+
+
+def true_weekly_optimal_value(squad, per_week):
+    """What a fixed 15-man squad is REALLY worth over the window: pick a FRESH best XI and
+    captain from each week's own predictions, then sum the 5 weekly totals.
+
+    starting_total's own shortcut -- one captain, chosen by highest 5-week SUM, doubling that
+    whole sum once -- is what every squad-ranking search in this file actually optimises against,
+    since a MILP needs a linear objective and "pick the best captain each of 5 weeks" isn't one.
+    That shortcut is exact only when the SAME player happens to be the best starter in every
+    single week. It understates a squad's true value whenever that varies -- caught when Nathan
+    asked whether weekly re-captaining was accounted for, and measured directly: recomputing 8
+    wildcard candidates this way moved each by +0.47 to +4.79 pts, NOT a constant, meaning the
+    shortcut had already picked the wrong "best" squad. The two squads containing Haaland gained
+    LEAST from the correction (+0.47, +1.85) versus the squads built around Fernandes/Gibbs-
+    White/Saka/Palmer (+2.5 to +4.8) -- the more varied-fixture midfield quartet had more
+    week-to-week captaincy value hiding in it than the shortcut could see, not less.
+
+    Deliberately NOT used inside the search MILPs themselves (pick_squad, pick_with_transfers) --
+    only as a post-hoc re-ranking of the handful of candidates they already found, which is cheap
+    (a few pick_best_lineup calls per candidate) precisely because it skips re-solving the MILP
+    with a genuinely non-linear per-week-captain objective. Confirmed separately that this barely
+    matters for TRANSFER comparisons specifically (13-14 shared players between before/after, so
+    the correction applies near-equally to both sides and mostly cancels in the net gain, ~0.5-0.6
+    pts on live numbers) -- it is a full squad-vs-squad rebuild, like a wildcard, where most of the
+    squad differs and the bias does not cancel."""
+    total = 0.0
+    for week, preds in per_week.items():
+        week_squad = [{**p, "predicted_points": preds.get(p["id"], 0.0)} for p in squad]
+        total += starting_total(pick_best_lineup(week_squad))
+    return round(total, 2)
+
+
+def pick_top_wildcard_squads(players, budget, top_n=WILDCARD_TOP_N_OPTIONS, per_week=None):
     """Top distinct from-scratch (wildcard) squads -- NOT pick_top_transfer_scenarios, even though
     a from-scratch build is technically "0 owned, up to 15 transfers". That function's cutting
     plane forces variety by excluding the full 15-man "new player" set, which is fine when
@@ -434,7 +475,11 @@ def pick_top_wildcard_squads(players, budget, top_n=WILDCARD_TOP_N_OPTIONS):
     before shipping it, not by reasoning about the MILP in the abstract.
 
     Cuts on the STARTING XI (11 ids) instead: the constraint forces at least one previous starter
-    out of the 15-man squad ENTIRELY, which necessarily changes who plays, not just who's benched."""
+    out of the 15-man squad ENTIRELY, which necessarily changes who plays, not just who's benched.
+
+    `per_week`, if given, re-ranks the found candidates by true_weekly_optimal_value instead of
+    the search's own fixed-captain proxy -- see that function for why the proxy is not just
+    slightly-off noise but can pick the wrong squad outright."""
     scenarios = []
     exclude_combos = []
     for _ in range(top_n):
@@ -443,6 +488,10 @@ def pick_top_wildcard_squads(players, budget, top_n=WILDCARD_TOP_N_OPTIONS):
             break
         scenarios.append({"squad": squad, "total": starting_total(squad)})
         exclude_combos.append(frozenset(p["id"] for p in squad if p["is_starter"]))
+    if per_week:
+        for scenario in scenarios:
+            scenario["true_total"] = true_weekly_optimal_value(scenario["squad"], per_week)
+        scenarios.sort(key=lambda s: -s["true_total"])
     return scenarios
 
 
@@ -485,6 +534,7 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
     budget = sum(selling_prices.values()) + bank_raw
     predictions = pd.read_csv(PREDICTIONS_FILE)
     event_by_week = predictions.drop_duplicates("weeks_ahead").set_index("weeks_ahead")["event"].to_dict()
+    per_week = build_per_week_predictions()
 
     free_hit = []
     free_hit_squads = {}
@@ -520,9 +570,18 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
         ids = {pid for pid in current_ids if pid in by_id}
         if len(ids) < len(current_ids):
             continue
-        current = starting_total(pick_best_lineup([by_id[pid] for pid in ids]))
-        optimal_squad = pick_squad(players, budget=budget)
-        optimal = starting_total(pick_best_lineup(optimal_squad))
+        window_per_week = {w: per_week[w] for w in range(start, HORIZON_GAMEWEEKS + 1)}
+        current_squad_players = [by_id[pid] for pid in ids]
+        # true_weekly_optimal_value, not starting_total, for BOTH sides -- this is a full
+        # squad-vs-squad rebuild (most of the 15 differs), so the fixed-single-captain shortcut's
+        # understatement does not cancel out the way it mostly does for a small transfer where
+        # 13-14 players are shared. See true_weekly_optimal_value for the measured proof.
+        current = true_weekly_optimal_value(current_squad_players, window_per_week)
+        wildcard_options = pick_top_wildcard_squads(
+            players, budget, WILDCARD_TOP_N_OPTIONS, per_week=window_per_week
+        )
+        optimal_squad = wildcard_options[0]["squad"] if wildcard_options else pick_squad(players, budget=budget)
+        optimal = wildcard_options[0]["true_total"] if wildcard_options else starting_total(optimal_squad)
         weeks_remaining = HORIZON_GAMEWEEKS - start + 1
         gap = optimal - current
         wildcard.append({
@@ -539,11 +598,9 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
             # Multiple DISTINCT options, not just the single top squad -- the top few are usually
             # within a point or two of each other (one or two marginal picks apart), and which is
             # actually "best" depends on things with no view in the model at all, like wanting a
-            # differential from a mini-league. Reuses pick_top_transfer_scenarios's own machinery:
-            # with current_ids empty, every player counts as "new", so its cutting-plane exclusion
-            # forces a genuinely different 15 each time rather than a near-duplicate one swap.
-            wildcard_now_options = pick_top_wildcard_squads(players, budget, WILDCARD_TOP_N_OPTIONS)
-            wildcard_now_squad = wildcard_now_options[0]["squad"] if wildcard_now_options else None
+            # differential from a mini-league. Already re-ranked by true_weekly_optimal_value above.
+            wildcard_now_options = wildcard_options
+            wildcard_now_squad = optimal_squad
     now = wildcard[0] if wildcard else None
     later = wildcard[-1] if len(wildcard) > 1 else None
     fading = bool(now and later and later["gap_per_week"] < 0.6 * now["gap_per_week"])
@@ -960,7 +1017,7 @@ def main():
             starters = sorted((p for p in squad if p["is_starter"]),
                               key=lambda p: (["GK", "DEF", "MID", "FWD"].index(p["position"]), -p["predicted_points"]))
             bench = sorted((p for p in squad if not p["is_starter"]), key=lambda p: -p["predicted_points"])
-            print(f"  Wildcard option {idx} ({option['total']:.2f} pts): "
+            print(f"  Wildcard option {idx} ({option['true_total']:.2f} pts, weekly-optimal captaincy): "
                   + ", ".join(f"{p['web_name']} ({p['position']})" for p in starters)
                   + f"  |  bench: " + ", ".join(p["web_name"] for p in bench))
 

@@ -1234,7 +1234,7 @@ function renderMyTeam() {
     if (!options || !options.length) return "";
     const blocks = options.map((opt, i) => `
       <details class="chip-squad-details"${i === 0 ? " open" : ""}>
-        <summary>Option ${i + 1} — ${fmt(opt.total)} pts</summary>
+        <summary>Option ${i + 1} — ${fmt(opt.true_total)} pts (weekly-optimal captaincy)</summary>
         <table class="bank-table" style="margin-top:8px;">
           <thead><tr><th></th><th>Player</th><th>Club</th><th class="num">Cost</th><th class="num">Pred.</th></tr></thead>
           <tbody>${chipSquadRows(opt.squad)}</tbody>
