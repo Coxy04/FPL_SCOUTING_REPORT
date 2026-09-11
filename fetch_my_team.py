@@ -132,7 +132,12 @@ WILDCARD_WINDOW = HORIZON_GAMEWEEKS
 # actually competing with -- see fetch_league_ownership. Same convention as MY_TEAM_ID: a personal
 # account fact, hardcoded rather than passed around, since this tool only ever runs for Nathan.
 MY_LEAGUE_ID = 1026520
-LEAGUE_TOP_N = 5
+# None = every rival in the league (his is 11 entries, small enough that "top 5" was an arbitrary
+# cut with no reason behind it -- caught when he pointed out the league has more members than that).
+# The cap exists only as a safety net against hammering the API with picks requests for a genuinely
+# huge public league, not as a considered choice of how many rivals matter.
+LEAGUE_TOP_N = None
+LEAGUE_MAX_RIVALS = 20
 
 
 def fetch_current_squad(session, team_id):
@@ -240,9 +245,13 @@ def compute_price_pressure(bootstrap):
 def fetch_league_ownership(session, league_id, my_team_id, event, top_n=LEAGUE_TOP_N):
     """What fraction of the managers actually being competed against already own each player.
 
-    Deliberately excludes Nathan's own entry from "top N" -- the question this answers is about
-    rivals, and including yourself would trivially show 100% on anything you already own, which
-    tells you nothing about how contested a transfer target is.
+    `top_n=None` (the default) means every rival in the league, capped only at LEAGUE_MAX_RIVALS
+    as a safety net against a genuinely huge public league, not as a considered "top N" cutoff --
+    a small private league has no natural reason to look at only some of its rivals.
+
+    Deliberately excludes Nathan's own entry -- the question this answers is about rivals, and
+    including yourself would trivially show 100% on anything you already own, which tells you
+    nothing about how contested a transfer target is.
 
     `event` should be the SAME locked gameweek already resolved for Nathan's own squad
     (fetch_current_squad's `event`) -- everyone in a league shares one deadline clock, so there's
@@ -260,7 +269,8 @@ def fetch_league_ownership(session, league_id, my_team_id, event, top_n=LEAGUE_T
             f"{BASE_URL}/leagues-classic/{league_id}/standings/", timeout=30
         ).json()
         league_name = standings.get("league", {}).get("name", "your league")
-        rivals = [r for r in standings["standings"]["results"] if r["entry"] != my_team_id][:top_n]
+        rivals = [r for r in standings["standings"]["results"] if r["entry"] != my_team_id]
+        rivals = rivals[:top_n or LEAGUE_MAX_RIVALS]
         if not rivals:
             return None
 
