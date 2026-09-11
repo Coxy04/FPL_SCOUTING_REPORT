@@ -924,12 +924,31 @@ def main():
     if next_gw_lineup:
         captain = next((p for p in next_gw_lineup if p["is_captain"]), None)
         bench = [p for p in next_gw_lineup if not p["is_starter"]]
+        starters = [p for p in next_gw_lineup if p["is_starter"]]
         if captain:
             print(f"  Captain this week: {captain['web_name']} ({captain['predicted_points']:.2f} pts)")
         if bench:
             order = ", ".join(f"{p['web_name']} {p['predicted_points']:.2f}"
                               for p in sorted(bench, key=lambda p: -p["predicted_points"]))
             print(f"  Bench (best first): {order}")
+
+        # Captaincy DOUBLES whatever a player actually scores, so the mean isn't the only number
+        # that matters -- a wide, calibrated range (predicted_points_low/high, the same 80%
+        # interval already on the main dashboard table, single-fixture and valid only here at
+        # HORIZON_LINEUP=1) says how much upside is actually on the table versus a tight one that
+        # says "reliable but capped". Two players tied on mean can differ hugely on this.
+        ranked = sorted(starters, key=lambda p: -p["predicted_points"])[:4]
+        ceiling_pick = max(starters, key=lambda p: p.get("predicted_points_high", 0.0))
+        print("  Captain options (mean / floor-ceiling, calibrated 80% range):")
+        for p in ranked:
+            flag = "  <- highest ceiling" if p["id"] == ceiling_pick["id"] and p["id"] != captain["id"] else ""
+            print(f"    {p['web_name']:<16} {p['predicted_points']:>5.2f}  "
+                  f"({p.get('predicted_points_low', 0):.1f}-{p.get('predicted_points_high', 0):.1f}){flag}")
+        if captain and ceiling_pick["id"] != captain["id"] and ceiling_pick in ranked:
+            print(f"  Note: {captain['web_name']} has the higher MEAN, but {ceiling_pick['web_name']} has "
+                  f"the higher CEILING ({ceiling_pick['predicted_points_high']:.1f} vs "
+                  f"{captain['predicted_points_high']:.1f}) -- worth the swap if you want the bigger "
+                  f"swing rather than the safer expected points.")
     def league_note(player):
         pct = player.get("league_ownership_pct")
         return f" ({pct:.0f}% of top {league['top_n']})" if league and pct is not None else ""

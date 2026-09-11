@@ -101,7 +101,14 @@ def pick_squad(players, budget=BUDGET):
     ]
 
 
-DISPLAY_COLUMNS = ["team_code", "opponent_name", "opponent_short_name", "opponent_code", "was_home", "difficulty"]
+# predicted_points_low/high are SINGLE-FIXTURE uncertainty bounds (calibrated 80% interval -- see
+# fpl_ml_model.py's QUANTILE_MARGIN) and, like the rest of DISPLAY_COLUMNS, are aggregated with
+# "first" rather than summed. That is only ever valid at horizon=1 (one real gameweek) -- a
+# multi-week caller gets whichever week's band happened to be nearest, silently mislabelled as
+# covering the whole window, the exact trap the dashboard's own rangeCell() already guards against
+# for the main player table. Anything reading these fields off a >1-week horizon call is a bug.
+DISPLAY_COLUMNS = ["team_code", "opponent_name", "opponent_short_name", "opponent_code", "was_home",
+                   "difficulty", "predicted_points_low", "predicted_points_high"]
 
 
 def load_nearest_players(predictions, horizon=1, start_week=1):

@@ -1086,6 +1086,43 @@ function renderMyTeam() {
   const starters = MY_TEAM.current_squad.filter(p => p.is_starter);
   const bench = MY_TEAM.current_squad.filter(p => !p.is_starter);
 
+  // Captaincy doubles whatever a player actually scores, so the MEAN isn't the only number that
+  // matters -- predicted_points_low/high is the same calibrated 80% range already on the main
+  // player table, single-fixture and valid here because this is the GW-only (HORIZON_LINEUP=1)
+  // lineup carried in current_squad, not the multi-week total. Two players tied on mean can differ
+  // hugely on ceiling -- Fernandes vs Haaland on a live GW4 squad, near-identical means, differed
+  // by over 2 points on ceiling.
+  const captainHtml = (() => {
+    const candidates = starters.filter(p => p.predicted_points_high !== undefined)
+      .slice().sort((a, b) => b.predicted_points - a.predicted_points).slice(0, 4);
+    if (!candidates.length) return "";
+    const maxHigh = Math.max(...candidates.map(p => p.predicted_points_high || 0), 0.1);
+    const ceilingPick = candidates.reduce((a, b) => (b.predicted_points_high || 0) > (a.predicted_points_high || 0) ? b : a);
+    const meanPick = candidates[0];
+    const rows = candidates.map(p => {
+      const lo = p.predicted_points_low || 0, hi = p.predicted_points_high || 0, mean = p.predicted_points;
+      const loPct = 100 * lo / maxHigh, meanPct = 100 * mean / maxHigh, hiPct = 100 * hi / maxHigh;
+      const isCeiling = p.id === ceilingPick.id;
+      return `
+        <div class="chip-bar-row" style="margin:6px 0;">
+          <span class="chip-bar-label" style="width:96px;">${esc(p.web_name)}${isCeiling && p.id !== meanPick.id ? ' <span title="Highest ceiling" style="color:var(--gold);">▲</span>' : ""}</span>
+          <div class="chip-bar-track" style="position:relative;">
+            <div style="position:absolute; left:${loPct}%; width:${Math.max(1, hiPct - loPct)}%; height:100%; background:var(--rule); border-radius:4px;"></div>
+            <div style="position:absolute; left:calc(${meanPct}% - 1px); width:2px; height:100%; background:var(--accent);"></div>
+          </div>
+          <span class="chip-bar-value" style="width:auto; font-size:11px;">${fmt(mean)} (${fmt(lo)}-${fmt(hi)})</span>
+        </div>`;
+    }).join("");
+    const note = ceilingPick.id !== meanPick.id
+      ? `<div class="exp-empty" style="margin-top:6px;">${esc(meanPick.web_name)} has the higher mean, but <b>${esc(ceilingPick.web_name)}</b> has the higher ceiling (${fmt(ceilingPick.predicted_points_high)} vs ${fmt(meanPick.predicted_points_high)}) -- worth the swap for the bigger swing over the safer expected points.</div>`
+      : `<div class="exp-empty" style="margin-top:6px;">${esc(meanPick.web_name)} leads on both mean and ceiling this week -- the straightforward pick.</div>`;
+    return `
+      <div class="team-row-label" style="margin-top:16px;">Captain options <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- mean and calibrated 80% range (bar), this gameweek only</span></div>
+      ${rows}
+      ${note}
+    `;
+  })();
+
   const ratingHtml = `
     <div class="team-summary">
       <div><div class="big">${fmt(MY_TEAM.next_gw_predicted_total)}</div><div class="label">GW${MY_TEAM.upcoming_event} only (XI + captain)</div></div>
@@ -1301,6 +1338,7 @@ function renderMyTeam() {
     ${planHtml}
     <div class="team-row-label">Starting XI <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- GW${MY_TEAM.upcoming_event} only, and the XI/captain that maximises it. This is the lineup decision, so it deliberately ignores the ${horizon}-gameweek view the transfer plan below uses</span></div>
     ${buildPitchHtml(starters)}
+    ${captainHtml}
     <div class="team-row-label">Bench <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- ordered best first for GW${MY_TEAM.upcoming_event}, so the top one is your first autosub</span></div>
     <div class="team-players">${bench.slice().sort((a, b) => b.predicted_points - a.predicted_points).map(benchChip).join("")}</div>
     <div class="team-row-label" style="margin-top:24px;">Transfer Plan <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- raw gains are discounted to ${fmt(100 * shrinkage, 0)}% before any hit is subtracted, because measuring last season showed only about that much of a predicted transfer gain actually materialises</span></div>
