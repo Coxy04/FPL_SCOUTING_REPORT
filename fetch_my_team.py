@@ -456,6 +456,7 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
     event_by_week = predictions.drop_duplicates("weeks_ahead").set_index("weeks_ahead")["event"].to_dict()
 
     free_hit = []
+    free_hit_squads = {}
     for week in range(1, HORIZON_GAMEWEEKS + 1):
         players = load_all_players(horizon=week, start_week=week)
         by_id = {p["id"]: p for p in players}
@@ -463,17 +464,24 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
         if len(ids) < len(current_ids):
             continue
         current = starting_total(pick_best_lineup([by_id[pid] for pid in ids]))
-        optimal = starting_total(pick_best_lineup(pick_squad(players, budget=budget)))
+        optimal_squad = pick_squad(players, budget=budget)
+        optimal = starting_total(pick_best_lineup(optimal_squad))
         free_hit.append({"weeks_ahead": week, "event": int(event_by_week.get(week, 0)),
                          "current": round(current, 2), "optimal": round(optimal, 2),
                          "gap": round(optimal - current, 2)})
+        # Kept for every week, not just the best one -- if that week's gap is too small to be
+        # worth a Free Hit, seeing the alternative squad explains WHY (it barely differs from
+        # your own), which a bare number can't.
+        free_hit_squads[week] = pick_best_lineup(optimal_squad)
     if not free_hit:
         return {"free_hit": [], "wildcard": [], "best_free_hit_week": None, "best_wildcard_week": None}
 
     free_hit_ranked = sorted(free_hit, key=lambda w: -w["gap"])
     best_fh = free_hit_ranked[0]
+    best_fh_squad = free_hit_squads.get(best_fh["weeks_ahead"])
 
     wildcard = []
+    wildcard_now_squad = None
     for start in range(1, HORIZON_GAMEWEEKS + 1):
         players = load_all_players(horizon=HORIZON_GAMEWEEKS, start_week=start)
         by_id = {p["id"]: p for p in players}
@@ -481,7 +489,8 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
         if len(ids) < len(current_ids):
             continue
         current = starting_total(pick_best_lineup([by_id[pid] for pid in ids]))
-        optimal = starting_total(pick_best_lineup(pick_squad(players, budget=budget)))
+        optimal_squad = pick_squad(players, budget=budget)
+        optimal = starting_total(pick_best_lineup(optimal_squad))
         weeks_remaining = HORIZON_GAMEWEEKS - start + 1
         gap = optimal - current
         wildcard.append({
@@ -490,6 +499,11 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
             "optimal": round(optimal, 2), "gap": round(gap, 2),
             "gap_per_week": round(gap / weeks_remaining, 2),
         })
+        if start == 1:
+            # "Wildcard now" is the only one worth showing in full -- later candidate starts exist
+            # to judge whether the CURRENT gap persists, not to browse alternative squads for a
+            # decision that (if taken) would be made with next week's information anyway.
+            wildcard_now_squad = pick_best_lineup(optimal_squad)
     now = wildcard[0] if wildcard else None
     later = wildcard[-1] if len(wildcard) > 1 else None
     fading = bool(now and later and later["gap_per_week"] < 0.6 * now["gap_per_week"])
@@ -498,9 +512,12 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
         "free_hit": free_hit_ranked,
         "wildcard": wildcard,
         "best_free_hit_week": best_fh,
+        "best_free_hit_squad": best_fh_squad,
         "wildcard_now": now,
+        "wildcard_now_squad": wildcard_now_squad,
         "wildcard_gap_fading": fading,
         "horizon_weeks": len(free_hit),
+        "budget": budget,
     }
 
 
@@ -896,6 +913,13 @@ def main():
             else:
                 print(f"  That gap holds up across the visible window rather than fading -- a "
                       f"steadier signal that it reflects a real, structural squad problem.")
+        wc_squad = chip_timing.get("wildcard_now_squad")
+        if wc_squad:
+            wc_starters = sorted((p for p in wc_squad if p["is_starter"]),
+                                 key=lambda p: (["GK", "DEF", "MID", "FWD"].index(p["position"]), -p["predicted_points"]))
+            wc_bench = sorted((p for p in wc_squad if not p["is_starter"]), key=lambda p: -p["predicted_points"])
+            print(f"  Wildcard-now XI: " + ", ".join(f"{p['web_name']} ({p['position']})" for p in wc_starters))
+            print(f"  Wildcard-now bench: " + ", ".join(p["web_name"] for p in wc_bench))
 
     rising = sorted((p for p in all_players
                      if (price_pressure.get(p["id"]) or {}).get("direction") == "rising"),

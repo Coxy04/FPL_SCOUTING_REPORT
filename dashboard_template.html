@@ -364,6 +364,9 @@
   .chip-bar-fill.chip-bar-best { background: var(--gold); }
   .chip-bar-fill.chip-bar-wc { background: var(--accent); }
   .chip-bar-value { width: 56px; text-align: right; flex-shrink: 0; }
+  .chip-squad-details { margin-top: 10px; font-size: 12.5px; }
+  .chip-squad-details summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+  .chip-squad-bench { opacity: 0.6; }
   .price-tag { font-size: 9.5px; vertical-align: middle; cursor: help; }
   .price-up { color: #16a34a; }
   .league-tag { font-size: 9.5px; vertical-align: middle; cursor: help; color: var(--ink-muted); font-family: "IBM Plex Mono", monospace; border: 1px solid var(--rule); border-radius: 3px; padding: 0 3px; }
@@ -1194,6 +1197,33 @@ function renderMyTeam() {
   // widgets rather than one -- a Free Hit's whole value is a single-week spike (it reverts after),
   // a Wildcard's is a persistent gap (it doesn't), and conflating them into one number would
   // answer neither honestly.
+  // Compact squad listing for a chip's recommended XI/bench -- deliberately a plain table rather
+  // than the pitch graphic used for the real squad above: two of those side by side would be
+  // visually heavy, and this is a reference view for a hypothetical squad, not the primary one.
+  const chipSquadTable = squad => {
+    if (!squad || !squad.length) return "";
+    const rows = p => `
+      <tr${p.is_starter ? "" : ' class="chip-squad-bench"'}>
+        <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
+        <td>${esc(p.web_name)}${p.is_captain ? ' <b title="Captain">(C)</b>' : ""}</td>
+        <td style="color:var(--ink-muted);">${esc(p.team_name)}</td>
+        <td class="num">${fmtCost(p.now_cost)}</td>
+        <td class="num">${fmt(p.predicted_points)}</td>
+      </tr>`;
+    const order = ["GK", "DEF", "MID", "FWD"];
+    const sorted = squad.slice().sort((a, b) =>
+      (a.is_starter === b.is_starter ? 0 : a.is_starter ? -1 : 1) ||
+      order.indexOf(a.position) - order.indexOf(b.position) || b.predicted_points - a.predicted_points);
+    return `
+      <details class="chip-squad-details">
+        <summary>See the squad</summary>
+        <table class="bank-table" style="margin-top:8px;">
+          <thead><tr><th></th><th>Player</th><th>Club</th><th class="num">Cost</th><th class="num">Pred.</th></tr></thead>
+          <tbody>${sorted.map(rows).join("")}</tbody>
+        </table>
+      </details>`;
+  };
+
   const chipHtml = (() => {
     const ct = MY_TEAM.chip_timing;
     if (!ct || !ct.free_hit || !ct.free_hit.length) return "";
@@ -1228,6 +1258,7 @@ function renderMyTeam() {
               ? `No standout week yet (${fmt(Math.min(...fhGaps), 1)} to +${fmt(Math.max(...fhGaps), 1)} across the window) — expected this early, before blanks/doubles from cup exits and fixture pile-ups show up.`
               : `Best so far: <b>GW${fhBest.event}</b>, ${fhBest.optimal.toFixed(1)} unconstrained vs ${fhBest.current.toFixed(1)} for your saved squad.`}
           </div>
+          ${chipSquadTable(ct.best_free_hit_squad)}
         </div>
         <div class="chip-card">
           <div class="chip-card-title">Wildcard <span class="chip-card-sub">permanent -- needs the gap to persist, not spike once</span></div>
@@ -1238,6 +1269,7 @@ function renderMyTeam() {
               ? ` But it is <b>fading</b> across the window (down to ${fmt(wcLast.gap_per_week, 1)}/week by the last week visible) — some of it may be a short-term blip rather than a structural problem.`
               : ` That gap holds up rather than fading — a steadier sign it reflects a real squad problem, not a one-off.`}
           </div>
+          ${chipSquadTable(ct.wildcard_now_squad)}
         </div>
       </div>
     `;
