@@ -366,6 +366,7 @@
   .chip-bar-value { width: 56px; text-align: right; flex-shrink: 0; }
   .price-tag { font-size: 9.5px; vertical-align: middle; cursor: help; }
   .price-up { color: #16a34a; }
+  .league-tag { font-size: 9.5px; vertical-align: middle; cursor: help; color: var(--ink-muted); font-family: "IBM Plex Mono", monospace; border: 1px solid var(--rule); border-radius: 3px; padding: 0 3px; }
   .price-down { color: #dc2626; }
   .transfer-plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
   .transfer-option-head { font-size: 12.5px; font-weight: 700; color: var(--ink-secondary); margin: 4px 0; }
@@ -975,6 +976,14 @@ const benchChip = p => `
 // Price-timing tag. Deliberately a small annotation and never part of the ranking: net transfer
 // flow predicts FPL's own repricing well (5-8x lift on rises) but was measured worthless as a
 // points predictor, so it can tell you WHEN to make a move, never WHICH move to make.
+// League-ownership tag: what fraction of the rivals actually being competed with already own a
+// candidate transfer target. Rendered only on the INCOMING side -- the question this answers is
+// "how contested is this pick", which is about who you'd be bringing in, not who you're dropping.
+const leagueTag = p => {
+  const pct = p.league_ownership_pct;
+  if (pct === undefined || pct === null || !MY_TEAM.league) return "";
+  return ` <span class="league-tag" title="${MY_TEAM.league.top_n} rivals ahead of you in \"${esc(MY_TEAM.league.league_name)}\" -- ${pct.toFixed(0)}% of them already own ${esc(p.web_name)}">${pct.toFixed(0)}%L</span>`;
+};
 const priceTag = p => {
   const d = p.price_pressure && p.price_pressure.direction;
   if (d === "rising") return ` <span class="price-tag price-up" title="Top decile of this week's net transfers in — ~14% chance of a price rise next gameweek vs ~2% base rate. Buy sooner rather than later.">▲</span>`;
@@ -1118,7 +1127,7 @@ function renderMyTeam() {
           <div class="transfer-row">
             <span class="transfer-out">${esc(out.web_name)} <span class="cost">${fmtCost(out.now_cost)}</span>${priceTag(out)}</span>
             <span class="transfer-arrow">→</span>
-            <span class="transfer-in">${esc(inP.web_name)} <span class="cost">${fmtCost(inP.now_cost)}</span>${priceTag(inP)}</span>
+            <span class="transfer-in">${esc(inP.web_name)} <span class="cost">${fmtCost(inP.now_cost)}</span>${priceTag(inP)}${leagueTag(inP)}</span>
           </div>
         `;
       }).join("");
@@ -1148,7 +1157,7 @@ function renderMyTeam() {
     if (!plans.length) return "";
     const rows = plans.slice(0, 8).map(p => {
       const when = p.wait_weeks ? `Bank ${p.wait_weeks}wk` : "Act now";
-      const moves = p.transfers_out.map((o, i) => `${esc(o.web_name)} → ${esc(p.transfers_in[i].web_name)}`).join(", ");
+      const moves = p.transfers_out.map((o, i) => `${esc(o.web_name)} → ${esc(p.transfers_in[i].web_name)}${leagueTag(p.transfers_in[i])}`).join(", ");
       return `
         <tr class="${p.calibrated ? "" : "bank-uncal"}">
           <td><b>${when}</b>, ${p.transfers} transfer${p.transfers > 1 ? "s" : ""} <span style="color:var(--ink-muted);">(${p.free_transfers_then} free)</span>${p.calibrated ? "" : ' <span class="bank-star" title="Not yet discounted for deferral risk — excluded from the recommendation">*</span>'}</td>

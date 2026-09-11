@@ -128,6 +128,12 @@ HOLD_DECISION_MARGIN = 2.0
 # window the model can actually see, and there is no visibility to judge a longer one anyway.
 WILDCARD_WINDOW = HORIZON_GAMEWEEKS
 
+# Nathan's mini-league, for gauging how contested a transfer target is among the managers he's
+# actually competing with -- see fetch_league_ownership. Same convention as MY_TEAM_ID: a personal
+# account fact, hardcoded rather than passed around, since this tool only ever runs for Nathan.
+MY_LEAGUE_ID = 1026520
+LEAGUE_TOP_N = 5
+
 
 def fetch_current_squad(session, team_id):
     entry = session.get(f"{BASE_URL}/entry/{team_id}/", timeout=30).json()
@@ -229,6 +235,53 @@ def compute_price_pressure(bootstrap):
             "change_this_gw": element["cost_change_event"],
         }
     return pressure
+
+
+def fetch_league_ownership(session, league_id, my_team_id, event, top_n=LEAGUE_TOP_N):
+    """What fraction of the managers actually being competed against already own each player.
+
+    Deliberately excludes Nathan's own entry from "top N" -- the question this answers is about
+    rivals, and including yourself would trivially show 100% on anything you already own, which
+    tells you nothing about how contested a transfer target is.
+
+    `event` should be the SAME locked gameweek already resolved for Nathan's own squad
+    (fetch_current_squad's `event`) -- everyone in a league shares one deadline clock, so there's
+    no need to re-resolve it per rival, and picks for that event exist the moment it locks, not
+    only once it's been played.
+
+    Both endpoints (league standings, another entry's picks) are public with no auth needed, same
+    as Nathan's own team fetch -- confirmed against this actual league before building this.
+
+    Returns None on any failure (bad league id, FPL API hiccup, an unexpected response shape)
+    rather than raising -- an external league lookup going wrong should never take down the whole
+    refresh over what is, after all, a nice-to-have."""
+    try:
+        standings = session.get(
+            f"{BASE_URL}/leagues-classic/{league_id}/standings/", timeout=30
+        ).json()
+        league_name = standings.get("league", {}).get("name", "your league")
+        rivals = [r for r in standings["standings"]["results"] if r["entry"] != my_team_id][:top_n]
+        if not rivals:
+            return None
+
+        counts = {}
+        managers = []
+        for rival in rivals:
+            picks = session.get(
+                f"{BASE_URL}/entry/{rival['entry']}/event/{event}/picks/", timeout=30
+            ).json()["picks"]
+            managers.append({"entry_name": rival["entry_name"], "rank": rival["rank"]})
+            for pick in picks:
+                counts[pick["element"]] = counts.get(pick["element"], 0) + 1
+
+        n = len(rivals)
+        ownership_pct = {pid: round(100 * count / n, 0) for pid, count in counts.items()}
+        return {"league_name": league_name, "top_n": n, "managers": managers,
+                "ownership_pct": ownership_pct}
+    except (requests.RequestException, KeyError, ValueError) as exc:
+        print(f"Warning: couldn't fetch league ownership for league {league_id} ({exc}); "
+              f"skipping league ownership context.")
+        return None
 
 
 def compute_free_transfers(session, team_id, current_event):
@@ -660,6 +713,19 @@ def main():
     # to be worth zero. See evaluate_bank_plans.
     bank_plans = evaluate_bank_plans(current_ids, selling_prices, bank_raw, free_transfers)
     chip_timing = evaluate_chip_timing(current_ids, selling_prices, bank_raw)
+
+    # How contested each candidate transfer target is among the managers Nathan is actually
+    # competing with -- attached to every transfers_in entry across both scenarios and bank plans,
+    # since both are "transfer suggestions" in exactly the sense the feature is for.
+    league = fetch_league_ownership(session, MY_LEAGUE_ID, MY_TEAM_ID, event)
+    if league:
+        for opts in transfer_scenarios.values():
+            for s in opts:
+                for p in s["transfers_in"]:
+                    p["league_ownership_pct"] = league["ownership_pct"].get(p["id"], 0.0)
+        for plan in bank_plans:
+            for p in plan["transfers_in"]:
+                p["league_ownership_pct"] = league["ownership_pct"].get(p["id"], 0.0)
     act_now_best = next((p for p in bank_plans if p["wait_weeks"] == 0), None)
     hold_best = next((p for p in bank_plans if p["wait_weeks"] > 0), None)
     # Only let banking change the recommendation once its discount has actually been measured.
@@ -701,6 +767,7 @@ def main():
         "hit_rejected_as_marginal": hit_rejected,
         "bank_plans": bank_plans,
         "chip_timing": chip_timing,
+        "league": league,
         "recommended_plan": recommended_plan,
         "hold_shrinkage": HOLD_GAIN_SHRINKAGE,
         "hold_uncalibrated": hold_uncalibrated,
@@ -738,6 +805,14 @@ def main():
             order = ", ".join(f"{p['web_name']} {p['predicted_points']:.2f}"
                               for p in sorted(bench, key=lambda p: -p["predicted_points"]))
             print(f"  Bench (best first): {order}")
+    def league_note(player):
+        pct = player.get("league_ownership_pct")
+        return f" ({pct:.0f}% of top {league['top_n']})" if league and pct is not None else ""
+
+    if league:
+        print(f"  League context: {league['top_n']} rivals ahead of you in \"{league['league_name']}\" "
+              f"-- the ownership % next to each incoming player below is how many of THEM already own "
+              f"him, not overall FPL ownership.")
     for n in transfer_counts:
         options = transfer_scenarios[str(n)]
         hit_note = "" if n <= free_transfers else f", includes a {(n - free_transfers) * HIT_COST_PER_TRANSFER}-pt hit"
@@ -746,7 +821,10 @@ def main():
             continue
         print(f"  With {n} transfer(s){hit_note}, top {len(options)} option(s):")
         for rank, s in enumerate(options, start=1):
-            moves = ", ".join(f"{o['web_name']} -> {i['web_name']}" for o, i in zip(s["transfers_out"], s["transfers_in"]))
+            moves = ", ".join(
+                f"{o['web_name']} -> {i['web_name']}{league_note(i)}"
+                for o, i in zip(s["transfers_out"], s["transfers_in"])
+            )
             hit_part = f" - {s['hit_cost']} hit" if s["hit_cost"] else ""
             print(f"    {rank}. raw {s['raw_gain']:+.2f} x{s['shrinkage_applied']:.2f} -> "
                   f"{s['expected_gain']:+.2f}{hit_part} = net {s['net_gain']:+.2f}  -- {moves}")
@@ -765,7 +843,7 @@ def main():
     for plan in bank_plans[:8]:
         when = "act now" if not plan["wait_weeks"] else f"bank {plan['wait_weeks']}wk"
         label = f"{when}, {plan['transfers']} transfer(s) w/ {plan['free_transfers_then']} free"
-        moves = ", ".join(f"{o['web_name']}->{i['web_name']}"
+        moves = ", ".join(f"{o['web_name']}->{i['web_name']}{league_note(i)}"
                           for o, i in zip(plan["transfers_out"], plan["transfers_in"]))
         flag = "" if plan["calibrated"] else " *"
         print(f"  {label:<34}{plan['raw_gain']:<+9.2f}{plan['expected_gain']:<+12.2f}"
