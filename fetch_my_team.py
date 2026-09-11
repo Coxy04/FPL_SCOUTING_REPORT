@@ -36,6 +36,13 @@ MY_TEAM_ID = 4340534
 PREDICTIONS_FILE = Path("fpl_ml_predictions.csv")
 OUTPUT_FILE = Path("my_fpl_team.json")
 TOP_N_OPTIONS = 5
+# Wildcard options specifically get a WIDER search than TOP_N_OPTIONS (which Nathan set for
+# transfer scenarios). Justified by what building this turned up: the top wildcard squads are
+# often within a few TENTHS of a point of each other (not the couple of points typical between
+# transfer options), so a same-size search misses real, near-identical alternatives that use a
+# different marquee player -- caught when a search of 5 surfaced Haaland in only 1, but widening
+# to 15 found the true picture (2 of 15, best one only 0.11 pts back, effectively a coin flip).
+WILDCARD_TOP_N_OPTIONS = 8
 # This is a multi-week planning decision (use transfers now vs. bank them), not a single-gameweek
 # call -- 5 gameweeks is deliberately the outlook here (wider than "My Team"'s own rating, which
 # stayed at 3): long enough to judge whether a transfer's benefit holds up, short enough that the
@@ -415,7 +422,7 @@ def pick_top_transfer_scenarios(current_ids, current_value, bank, all_players, m
     return scenarios
 
 
-def pick_top_wildcard_squads(players, budget, top_n=TOP_N_OPTIONS):
+def pick_top_wildcard_squads(players, budget, top_n=WILDCARD_TOP_N_OPTIONS):
     """Top distinct from-scratch (wildcard) squads -- NOT pick_top_transfer_scenarios, even though
     a from-scratch build is technically "0 owned, up to 15 transfers". That function's cutting
     plane forces variety by excluding the full 15-man "new player" set, which is fine when
@@ -535,7 +542,7 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
             # differential from a mini-league. Reuses pick_top_transfer_scenarios's own machinery:
             # with current_ids empty, every player counts as "new", so its cutting-plane exclusion
             # forces a genuinely different 15 each time rather than a near-duplicate one swap.
-            wildcard_now_options = pick_top_wildcard_squads(players, budget, TOP_N_OPTIONS)
+            wildcard_now_options = pick_top_wildcard_squads(players, budget, WILDCARD_TOP_N_OPTIONS)
             wildcard_now_squad = wildcard_now_options[0]["squad"] if wildcard_now_options else None
     now = wildcard[0] if wildcard else None
     later = wildcard[-1] if len(wildcard) > 1 else None
