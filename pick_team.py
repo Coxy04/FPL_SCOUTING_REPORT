@@ -51,8 +51,12 @@ def save_history(entries):
             f.write(json.dumps(entry) + "\n")
 
 
-def pick_squad(players):
-    """players: list of dicts with id, web_name, team_name, position, now_cost, predicted_points."""
+def pick_squad(players, budget=BUDGET):
+    """players: list of dicts with id, web_name, team_name, position, now_cost, predicted_points.
+
+    `budget` defaults to the flat £100.0m assumption everything else here uses, but takes a real
+    total (selling value + bank) when the caller has one -- a wildcard or free hit genuinely
+    resets you to THAT number, not a round £100m, and the two differ by up to a few tenths."""
     prob = pulp.LpProblem("fpl_squad", pulp.LpMaximize)
     squad = {p["id"]: pulp.LpVariable(f"squad_{p['id']}", cat="Binary") for p in players}
     starter = {p["id"]: pulp.LpVariable(f"start_{p['id']}", cat="Binary") for p in players}
@@ -64,7 +68,7 @@ def pick_squad(players):
     )
 
     prob += pulp.lpSum(squad.values()) == 15
-    prob += pulp.lpSum(by_id[i]["now_cost"] * squad[i] for i in squad) <= BUDGET
+    prob += pulp.lpSum(by_id[i]["now_cost"] * squad[i] for i in squad) <= budget
     prob += pulp.lpSum(starter.values()) == 11
     for i in squad:
         prob += starter[i] <= squad[i]

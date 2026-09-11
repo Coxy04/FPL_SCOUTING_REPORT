@@ -123,6 +123,11 @@ HOLD_GAIN_SHRINKAGE = 0.55
 # edge at all, it is the width of the measurement. Same reasoning as HIT_DECISION_MARGIN.
 HOLD_DECISION_MARGIN = 2.0
 
+# Rolling window (in weeks) used to judge Wildcard timing -- see evaluate_chip_timing. Set equal
+# to the model's own horizon: a wildcard's whole case rests on a gap that persists across the
+# window the model can actually see, and there is no visibility to judge a longer one anyway.
+WILDCARD_WINDOW = HORIZON_GAMEWEEKS
+
 
 def fetch_current_squad(session, team_id):
     entry = session.get(f"{BASE_URL}/entry/{team_id}/", timeout=30).json()
@@ -351,6 +356,91 @@ def starting_total(squad):
     return round(sum(p["predicted_points"] * (2 if p["is_captain"] else 1) for p in squad if p["is_starter"]), 2)
 
 
+def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
+    """When a Free Hit or Wildcard would be worth most, within the horizon the model can currently
+    see (weeks_ahead 1-5 -- there is no visibility past that, so a gap that opens up later, e.g. a
+    Christmas blank, will not show here until it enters the window).
+
+    The two chips are fundamentally different shapes of decision, and conflating them would answer
+    neither question honestly:
+
+    FREE HIT reverts after one gameweek, so its whole value is a SINGLE-WEEK spike: is there a week
+    where an unconstrained squad clears your saved squad by a lot more than usual? That is exactly
+    what a blank (your players have no fixture) or a double (an alternative squad's players have
+    two) looks like. Measured per week in isolation -- summing it into a multi-week total would
+    mean nothing, since the whole point is the squad is thrown away again after one week.
+
+    WILDCARD is permanent, so it needs its own squad, held fixed across every week it covers --
+    NOT one squad re-optimized fresh per week, which is what a series of Free Hits would be, and
+    would overstate a wildcard's true value by handing it a advantage no wildcard actually has. So
+    each candidate wildcard week gets ONE squad chosen to maximise the SUM of predicted points
+    from that week to the end of the visible horizon (same method as the headline rating_pct
+    already on this dashboard -- wildcarding today is exactly that number, top_total minus
+    current_total, and this just re-runs it from later possible starts to see whether the gap
+    driving it is real and persistent or already fading by the time it would resolve).
+
+    The window necessarily SHRINKS as the candidate start moves later (5 weeks visible from now,
+    4 from next week, ...), so raw point totals are not comparable across starts -- a smaller gap
+    later could just mean less remaining time to accumulate one, not a smaller problem. Comparing
+    gap PER REMAINING WEEK is what actually answers "is this getting better or worse", and even
+    that is on a shrinking, noisier sample as the window narrows.
+
+    Both chips compare against the SAME reachable optimum: pick_squad on your real budget (selling
+    value plus bank), not a flat GBP100m -- a wildcard or free hit resets you to what you actually
+    have, not a round number."""
+    budget = sum(selling_prices.values()) + bank_raw
+    predictions = pd.read_csv(PREDICTIONS_FILE)
+    event_by_week = predictions.drop_duplicates("weeks_ahead").set_index("weeks_ahead")["event"].to_dict()
+
+    free_hit = []
+    for week in range(1, HORIZON_GAMEWEEKS + 1):
+        players = load_all_players(horizon=week, start_week=week)
+        by_id = {p["id"]: p for p in players}
+        ids = {pid for pid in current_ids if pid in by_id}
+        if len(ids) < len(current_ids):
+            continue
+        current = starting_total(pick_best_lineup([by_id[pid] for pid in ids]))
+        optimal = starting_total(pick_best_lineup(pick_squad(players, budget=budget)))
+        free_hit.append({"weeks_ahead": week, "event": int(event_by_week.get(week, 0)),
+                         "current": round(current, 2), "optimal": round(optimal, 2),
+                         "gap": round(optimal - current, 2)})
+    if not free_hit:
+        return {"free_hit": [], "wildcard": [], "best_free_hit_week": None, "best_wildcard_week": None}
+
+    free_hit_ranked = sorted(free_hit, key=lambda w: -w["gap"])
+    best_fh = free_hit_ranked[0]
+
+    wildcard = []
+    for start in range(1, HORIZON_GAMEWEEKS + 1):
+        players = load_all_players(horizon=HORIZON_GAMEWEEKS, start_week=start)
+        by_id = {p["id"]: p for p in players}
+        ids = {pid for pid in current_ids if pid in by_id}
+        if len(ids) < len(current_ids):
+            continue
+        current = starting_total(pick_best_lineup([by_id[pid] for pid in ids]))
+        optimal = starting_total(pick_best_lineup(pick_squad(players, budget=budget)))
+        weeks_remaining = HORIZON_GAMEWEEKS - start + 1
+        gap = optimal - current
+        wildcard.append({
+            "weeks_ahead": start, "event": int(event_by_week.get(start, 0)),
+            "weeks_remaining": weeks_remaining, "current": round(current, 2),
+            "optimal": round(optimal, 2), "gap": round(gap, 2),
+            "gap_per_week": round(gap / weeks_remaining, 2),
+        })
+    now = wildcard[0] if wildcard else None
+    later = wildcard[-1] if len(wildcard) > 1 else None
+    fading = bool(now and later and later["gap_per_week"] < 0.6 * now["gap_per_week"])
+
+    return {
+        "free_hit": free_hit_ranked,
+        "wildcard": wildcard,
+        "best_free_hit_week": best_fh,
+        "wildcard_now": now,
+        "wildcard_gap_fading": fading,
+        "horizon_weeks": len(free_hit),
+    }
+
+
 def evaluate_bank_plans(current_ids, selling_prices, bank_raw, free_transfers):
     """Every way of using transfers over the next few weeks, on ONE comparable scale.
 
@@ -569,6 +659,7 @@ def main():
     # Banking as a first-class option, valued on the same scale as acting now rather than assumed
     # to be worth zero. See evaluate_bank_plans.
     bank_plans = evaluate_bank_plans(current_ids, selling_prices, bank_raw, free_transfers)
+    chip_timing = evaluate_chip_timing(current_ids, selling_prices, bank_raw)
     act_now_best = next((p for p in bank_plans if p["wait_weeks"] == 0), None)
     hold_best = next((p for p in bank_plans if p["wait_weeks"] > 0), None)
     # Only let banking change the recommendation once its discount has actually been measured.
@@ -609,6 +700,7 @@ def main():
         "recommended_net_gain": best_net_gain,
         "hit_rejected_as_marginal": hit_rejected,
         "bank_plans": bank_plans,
+        "chip_timing": chip_timing,
         "recommended_plan": recommended_plan,
         "hold_shrinkage": HOLD_GAIN_SHRINKAGE,
         "hold_uncalibrated": hold_uncalibrated,
@@ -687,6 +779,35 @@ def main():
               f"but by less than {HOLD_DECISION_MARGIN:.0f} pts, which is inside what the hold "
               f"calibration can resolve (measured edge +0.70, 90% CI [-0.99, +2.24], banking won "
               f"49% of pairs) -- so it is not recommended.")
+
+    if chip_timing["best_free_hit_week"]:
+        print()
+        print(f"CHIP TIMING (visible only within the model's {chip_timing['horizon_weeks']}-week "
+              f"horizon -- a later blank/double will not show until it enters this window):")
+        fh = chip_timing["best_free_hit_week"]
+        print(f"  Free Hit: best week so far is GW{fh['event']} ({fh['optimal']:.1f} unconstrained "
+              f"vs {fh['current']:.1f} for your saved squad, a {fh['gap']:+.1f} gap). Free Hit "
+              f"reverts after one week, so only a real single-week spike (a blank or a double) "
+              f"makes it worth it -- a small, similar gap every week is not a signal to act on.")
+        gaps = [w["gap"] for w in chip_timing["free_hit"]]
+        if gaps and (max(gaps) - min(gaps)) < 2.0:
+            print(f"  Free Hit gaps are flat across the window right now ({min(gaps):+.1f} to "
+                  f"{max(gaps):+.1f}) -- no standout week yet. Expected early season, before "
+                  f"blanks/doubles from cup exits and fixture pile-ups appear in the fixtures.")
+        wc = chip_timing["wildcard_now"]
+        if wc:
+            print(f"  Wildcard now would net {wc['gap']:+.1f} pts over the {wc['weeks_remaining']} "
+                  f"visible weeks ({wc['gap_per_week']:+.1f}/week) -- this is the same gap as your "
+                  f"rating vs the model's best-possible squad, just isolated as a number.")
+            if chip_timing["wildcard_gap_fading"]:
+                print(f"  But that gap is FADING across the visible window (down to "
+                      f"{chip_timing['wildcard'][-1]['gap_per_week']:+.1f}/week by the last week "
+                      f"visible) -- some of it may be a short-term blip (an injury, a rough run of "
+                      f"fixtures) rather than a structural problem, so it is worth checking why "
+                      f"before spending a wildcard on it.")
+            else:
+                print(f"  That gap holds up across the visible window rather than fading -- a "
+                      f"steadier signal that it reflects a real, structural squad problem.")
 
     rising = sorted((p for p in all_players
                      if (price_pressure.get(p["id"]) or {}).get("direction") == "rising"),
