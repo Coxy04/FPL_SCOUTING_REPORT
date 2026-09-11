@@ -1200,9 +1200,8 @@ function renderMyTeam() {
   // Compact squad listing for a chip's recommended XI/bench -- deliberately a plain table rather
   // than the pitch graphic used for the real squad above: two of those side by side would be
   // visually heavy, and this is a reference view for a hypothetical squad, not the primary one.
-  const chipSquadTable = squad => {
-    if (!squad || !squad.length) return "";
-    const rows = p => `
+  const chipSquadRows = squad => {
+    const rowHtml = p => `
       <tr${p.is_starter ? "" : ' class="chip-squad-bench"'}>
         <td><span class="pos-pill pos-${p.position}">${p.position}</span></td>
         <td>${esc(p.web_name)}${p.is_captain ? ' <b title="Captain">(C)</b>' : ""}</td>
@@ -1214,14 +1213,34 @@ function renderMyTeam() {
     const sorted = squad.slice().sort((a, b) =>
       (a.is_starter === b.is_starter ? 0 : a.is_starter ? -1 : 1) ||
       order.indexOf(a.position) - order.indexOf(b.position) || b.predicted_points - a.predicted_points);
+    return sorted.map(rowHtml).join("");
+  };
+  // Single-squad view (Free Hit only ever shows the best week's one squad).
+  const chipSquadTable = squad => {
+    if (!squad || !squad.length) return "";
     return `
       <details class="chip-squad-details">
         <summary>See the squad</summary>
         <table class="bank-table" style="margin-top:8px;">
           <thead><tr><th></th><th>Player</th><th>Club</th><th class="num">Cost</th><th class="num">Pred.</th></tr></thead>
-          <tbody>${sorted.map(rows).join("")}</tbody>
+          <tbody>${chipSquadRows(squad)}</tbody>
         </table>
       </details>`;
+  };
+  // Multi-option view (Wildcard) -- the top few squads are usually within a point or two of each
+  // other, and which is genuinely "best" also depends on things the model has no view of, like
+  // wanting a differential from a mini-league, so all options are shown, not just the top one.
+  const chipSquadOptions = options => {
+    if (!options || !options.length) return "";
+    const blocks = options.map((opt, i) => `
+      <details class="chip-squad-details"${i === 0 ? " open" : ""}>
+        <summary>Option ${i + 1} — ${fmt(opt.total)} pts</summary>
+        <table class="bank-table" style="margin-top:8px;">
+          <thead><tr><th></th><th>Player</th><th>Club</th><th class="num">Cost</th><th class="num">Pred.</th></tr></thead>
+          <tbody>${chipSquadRows(opt.squad)}</tbody>
+        </table>
+      </details>`).join("");
+    return `<div style="margin-top:10px;">${blocks}</div>`;
   };
 
   const chipHtml = (() => {
@@ -1269,7 +1288,7 @@ function renderMyTeam() {
               ? ` But it is <b>fading</b> across the window (down to ${fmt(wcLast.gap_per_week, 1)}/week by the last week visible) — some of it may be a short-term blip rather than a structural problem.`
               : ` That gap holds up rather than fading — a steadier sign it reflects a real squad problem, not a one-off.`}
           </div>
-          ${chipSquadTable(ct.wildcard_now_squad)}
+          ${chipSquadOptions(ct.wildcard_now_options)}
         </div>
       </div>
     `;

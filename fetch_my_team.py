@@ -415,6 +415,30 @@ def pick_top_transfer_scenarios(current_ids, current_value, bank, all_players, m
     return scenarios
 
 
+def pick_top_wildcard_squads(players, budget, top_n=TOP_N_OPTIONS):
+    """Top distinct from-scratch (wildcard) squads -- NOT pick_top_transfer_scenarios, even though
+    a from-scratch build is technically "0 owned, up to 15 transfers". That function's cutting
+    plane forces variety by excluding the full 15-man "new player" set, which is fine when
+    transfers are genuinely being weighed against a real incumbent squad, but wrong here: from an
+    empty squad, the marginal 15th pick is almost always an interchangeable ~0-point 4th-choice
+    bench keeper, so the very first thing it tried excluding was that keeper alone -- five
+    "distinct" options came back with an IDENTICAL starting XI and only the throwaway bench GK
+    changed, which is not a choice a manager can actually act on. Caught by reading the output
+    before shipping it, not by reasoning about the MILP in the abstract.
+
+    Cuts on the STARTING XI (11 ids) instead: the constraint forces at least one previous starter
+    out of the 15-man squad ENTIRELY, which necessarily changes who plays, not just who's benched."""
+    scenarios = []
+    exclude_combos = []
+    for _ in range(top_n):
+        squad = pick_with_transfers(set(), 0, budget, players, 15, exclude_combos)
+        if squad is None:
+            break
+        scenarios.append({"squad": squad, "total": starting_total(squad)})
+        exclude_combos.append(frozenset(p["id"] for p in squad if p["is_starter"]))
+    return scenarios
+
+
 def starting_total(squad):
     return round(sum(p["predicted_points"] * (2 if p["is_captain"] else 1) for p in squad if p["is_starter"]), 2)
 
@@ -482,6 +506,7 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
 
     wildcard = []
     wildcard_now_squad = None
+    wildcard_now_options = []
     for start in range(1, HORIZON_GAMEWEEKS + 1):
         players = load_all_players(horizon=HORIZON_GAMEWEEKS, start_week=start)
         by_id = {p["id"]: p for p in players}
@@ -500,10 +525,18 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
             "gap_per_week": round(gap / weeks_remaining, 2),
         })
         if start == 1:
-            # "Wildcard now" is the only one worth showing in full -- later candidate starts exist
-            # to judge whether the CURRENT gap persists, not to browse alternative squads for a
+            # "Wildcard now" is the only one worth browsing in full -- later candidate starts exist
+            # to judge whether the CURRENT gap persists, not to pick alternative squads for a
             # decision that (if taken) would be made with next week's information anyway.
-            wildcard_now_squad = pick_best_lineup(optimal_squad)
+            #
+            # Multiple DISTINCT options, not just the single top squad -- the top few are usually
+            # within a point or two of each other (one or two marginal picks apart), and which is
+            # actually "best" depends on things with no view in the model at all, like wanting a
+            # differential from a mini-league. Reuses pick_top_transfer_scenarios's own machinery:
+            # with current_ids empty, every player counts as "new", so its cutting-plane exclusion
+            # forces a genuinely different 15 each time rather than a near-duplicate one swap.
+            wildcard_now_options = pick_top_wildcard_squads(players, budget, TOP_N_OPTIONS)
+            wildcard_now_squad = wildcard_now_options[0]["squad"] if wildcard_now_options else None
     now = wildcard[0] if wildcard else None
     later = wildcard[-1] if len(wildcard) > 1 else None
     fading = bool(now and later and later["gap_per_week"] < 0.6 * now["gap_per_week"])
@@ -515,6 +548,7 @@ def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
         "best_free_hit_squad": best_fh_squad,
         "wildcard_now": now,
         "wildcard_now_squad": wildcard_now_squad,
+        "wildcard_now_options": wildcard_now_options,
         "wildcard_gap_fading": fading,
         "horizon_weeks": len(free_hit),
         "budget": budget,
@@ -913,13 +947,15 @@ def main():
             else:
                 print(f"  That gap holds up across the visible window rather than fading -- a "
                       f"steadier signal that it reflects a real, structural squad problem.")
-        wc_squad = chip_timing.get("wildcard_now_squad")
-        if wc_squad:
-            wc_starters = sorted((p for p in wc_squad if p["is_starter"]),
-                                 key=lambda p: (["GK", "DEF", "MID", "FWD"].index(p["position"]), -p["predicted_points"]))
-            wc_bench = sorted((p for p in wc_squad if not p["is_starter"]), key=lambda p: -p["predicted_points"])
-            print(f"  Wildcard-now XI: " + ", ".join(f"{p['web_name']} ({p['position']})" for p in wc_starters))
-            print(f"  Wildcard-now bench: " + ", ".join(p["web_name"] for p in wc_bench))
+        wc_options = chip_timing.get("wildcard_now_options") or []
+        for idx, option in enumerate(wc_options, start=1):
+            squad = option["squad"]
+            starters = sorted((p for p in squad if p["is_starter"]),
+                              key=lambda p: (["GK", "DEF", "MID", "FWD"].index(p["position"]), -p["predicted_points"]))
+            bench = sorted((p for p in squad if not p["is_starter"]), key=lambda p: -p["predicted_points"])
+            print(f"  Wildcard option {idx} ({option['total']:.2f} pts): "
+                  + ", ".join(f"{p['web_name']} ({p['position']})" for p in starters)
+                  + f"  |  bench: " + ", ".join(p["web_name"] for p in bench))
 
     rising = sorted((p for p in all_players
                      if (price_pressure.get(p["id"]) or {}).get("direction") == "rising"),
