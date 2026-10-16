@@ -524,6 +524,7 @@
           <th class="num" data-key="ownership_pct">Owned %</th>
           <th class="num" data-key="season_points">Actual Pts</th>
           <th class="num" data-key="_predShown" id="pred-col-header">Pred. Pts</th>
+          <th class="num" data-key="_tier" title="Players within one noise unit of each other are the same tier -- the model's week-to-week prediction noise is about 1 point per gameweek, so a 0.3-point gap is not a decision">Tier</th>
           <th class="num" title="80% confidence interval from a separately-trained quantile model">Range</th>
           <th class="num" data-key="points_per_million">Pts/£m</th>
           <th class="num" data-key="underperformance_gap">Gap</th>
@@ -827,6 +828,13 @@ function renderFullTable() {
   // otherwise surface the same player (and the same total) twice.
   let rows = PLAYERS.filter(p => isTotal ? (p.weeks_ahead === 1 && p.fixture_index === 0) : p.weeks_ahead === Number(horizon));
   rows = rows.map(p => ({ ...p, _predShown: isTotal ? p.predicted_points_5gw : p.predicted_points }));
+  // Tiers: bands of one "noise unit" below the best prediction in the view. The model's prediction
+  // for the same player and gameweek moves ~0.65 pts on average between weekly runs, and the top of
+  // the ranking is only ~0.5 pts apart, so decimals there are not information. One point per
+  // gameweek; wider for the multi-week total since the noise adds up.
+  const noiseUnit = isTotal ? 3.0 : 1.0;
+  const best = Math.max(...rows.map(p => p._predShown || 0), 0);
+  rows = rows.map(p => ({ ...p, _tier: Math.min(9, 1 + Math.floor((best - (p._predShown || 0)) / noiseUnit)) }));
   if (filterPos) rows = rows.filter(p => p.position === filterPos);
   if (searchTerm) {
     const t = searchTerm.toLowerCase();
@@ -856,6 +864,7 @@ function renderFullTable() {
       <td class="num">${fmt(p.ownership_pct)}%</td>
       <td class="num">${fmt(p.season_points, 0)}</td>
       <td class="num">${fmt(p._predShown)}</td>
+      <td class="num"><span class="pos-pill" style="background:${p._tier === 1 ? "var(--gold)" : p._tier === 2 ? "var(--accent)" : "var(--rule)"};color:${p._tier <= 2 ? "#fff" : "var(--ink-muted)"};">T${p._tier}</span></td>
       <td class="num" style="color:var(--ink-muted);font-size:12.5px;">${rangeCell(p, isTotal)}</td>
       <td class="num">${fmt(p.points_per_million)}</td>
       <td class="num${p.underperformance_gap > 0 ? " gap-positive" : ""}">${p.underperformance_gap > 0 ? "+" : ""}${fmt(p.underperformance_gap)}</td>
@@ -864,7 +873,7 @@ function renderFullTable() {
       <td><button class="why-btn${expanded ? " active" : ""}" data-row-key="${rowKey}">${expanded ? "Hide" : "Why?"}</button></td>
     </tr>`;
     const expandRow = expanded
-      ? `<tr class="exp-row-wrap"><td colspan="14">${explanationHtml(p)}</td></tr>`
+      ? `<tr class="exp-row-wrap"><td colspan="15">${explanationHtml(p)}</td></tr>`
       : "";
     return mainRow + expandRow;
   }).join("");
@@ -1108,7 +1117,8 @@ function renderMyTeam() {
           <span class="chip-bar-value" style="width:auto; font-size:11px;">${fmt(p.predicted_points)} pts · ${Math.round(100 * prob)}% haul · ${fmt(p.ownership_pct || 0, 1)}% owned</span>
         </div>`;
     }).join("");
-    const note = rec ? `<div class="exp-empty" style="margin-top:6px;">${esc(rec.reason)}</div>` : "";
+    const discountNotes = (MY_TEAM.discount_notes || []).map(n => `<div class="exp-empty" style="margin-top:6px;">${esc(n.note)}</div>`).join("");
+    const note = (rec ? `<div class="exp-empty" style="margin-top:6px;">${esc(rec.reason)}</div>` : "") + discountNotes;
     return `
       <div class="team-row-label" style="margin-top:16px;">Captain options <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- predicted mean, chance of an 8+ haul (bar) and ownership, this gameweek only</span></div>
       ${rows}

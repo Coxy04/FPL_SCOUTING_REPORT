@@ -13,6 +13,7 @@ as browser JS on the GitHub Pages site directly -- that's a separate, deferred p
 letting other people check their own team; this script only ever looks up Nathan's own team ID.
 """
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -129,6 +130,26 @@ HOLD_GAIN_SHRINKAGE = 0.55
 # from zero, and holding won only 49% of pairs. A sub-2-point edge for banking is therefore not an
 # edge at all, it is the width of the measurement. Same reasoning as HIT_DECISION_MARGIN.
 HOLD_DECISION_MARGIN = 2.0
+
+# Stability rules. Measured on the archived snapshots (SEASON_REVIEW_GW1-6.md, "why the algorithm
+# changes"): the model's view of the SAME gameweek moves ~0.65 pts per startable player between two
+# weekly runs, rank correlation among startable players is only ~0.5 run-to-run, and 7 of the top 20
+# change every week. The optimiser then turns 0.1-pt differences into discrete "sell X" calls. So:
+# - a new recommended move must beat LAST run's recommended move (if still available) by
+#   CHURN_MARGIN net points before the recommendation changes. 1.5 is half the ~3-pt noise on a
+#   discounted 5-GW transfer gain; a design constant in the same spirit as HIT_DECISION_MARGIN, not
+#   yet calibrated by replay.
+# - players bought within the last RECENT_BUY_WEEKS gameweeks are not offered for sale unless FPL
+#   has flagged them (status not 'a', or chance of playing below 100). Flip-flopping on a recent buy
+#   costs a transfer each way for a gain the model can't resolve; an injury is a different matter.
+CHURN_MARGIN = 1.5
+RECENT_BUY_WEEKS = 3
+HISTORY_FILE = Path("my_fpl_team_history.jsonl")
+# Set per run in main() to the owned ids protected by the recent-buy rule; pick_with_transfers reads
+# it. Module-level so every search path (transfer scenarios, bank plans) honours it without threading
+# a parameter through each call. Only ever applied to ids in the CURRENT squad, so from-scratch
+# wildcard/free-hit searches (current_ids empty) are unaffected.
+LOCKED_IDS = set()
 
 # Rolling window (in weeks) used to judge Wildcard timing -- see evaluate_chip_timing. Set equal
 # to the model's own horizon: a wildcard's whole case rests on a gap that persists across the
@@ -397,6 +418,9 @@ def pick_with_transfers(current_ids, current_value, bank, all_players, max_trans
         prob += pulp.lpSum(squad[i] for i in squad if by_id[i]["team_name"] == team_name) <= MAX_PER_CLUB
 
     prob += new_players_in <= max_transfers
+    for i in LOCKED_IDS & set(current_ids):
+        if i in squad:
+            prob += squad[i] == 1  # recent buy, fit: not for sale this week (see RECENT_BUY_WEEKS)
     # Each excluded combo is (incoming ids, outgoing ids). Excluding on the incoming set alone --
     # the original version -- hid every alternative SALE for the same purchase: "Konsa -> De Cuyper"
     # was listed, "Ajayi -> De Cuyper" (identical value, different player kept) never was. Nathan
@@ -828,7 +852,23 @@ def main():
     bootstrap = session.get(f"{BASE_URL}/bootstrap-static/", timeout=30).json()
     fpl_elements = {e["id"]: e for e in bootstrap["elements"]}
     price_pressure = compute_price_pressure(bootstrap)
-    current_ids_raw = [pick["element"] for pick in picks_data["picks"]]
+
+    # The picks endpoint only shows the last LOCKED squad. Transfers already confirmed for the
+    # upcoming gameweek are in /transfers/ straight away, so apply them: otherwise a run made after
+    # Nathan has pulled the trigger on a move re-recommends it, and the free-transfer count is wrong.
+    transfers_log = session.get(f"{BASE_URL}/entry/{MY_TEAM_ID}/transfers/", timeout=30).json()
+    pending = [t for t in transfers_log if t.get("event") == upcoming_event]
+    picks = [dict(p) for p in picks_data["picks"]]
+    for t in pending:
+        for p in picks:
+            if p["element"] == t["element_out"]:
+                p["element"] = t["element_in"]
+        bank_raw += t["element_out_cost"] - t["element_in_cost"]
+    free_transfers = max(0, free_transfers - len(pending))
+    if pending:
+        print(f"Applied {len(pending)} transfer(s) already made for GW{upcoming_event}: "
+              + ", ".join(f"{fpl_elements[t['element_out']]['web_name']} -> {fpl_elements[t['element_in']]['web_name']}" for t in pending))
+    current_ids_raw = [pick["element"] for pick in picks]
     missing = [pid for pid in current_ids_raw if pid not in by_id]
     if missing:
         names = [fpl_elements[pid]["web_name"] for pid in missing if pid in fpl_elements]
@@ -836,10 +876,24 @@ def main():
               f"(likely a blank gameweek or unmatched fixture) -- excluded from optimization: {names}")
     current_ids = {pid for pid in current_ids_raw if pid in by_id}
     current_players = [by_id[pid] for pid in current_ids]
+
+    # Recent-buy protection (see RECENT_BUY_WEEKS): fit players bought in the last few gameweeks
+    # are locked into every transfer search this run.
+    global LOCKED_IDS
+    # A wildcard or free hit is a squad reset, not fifteen conviction buys -- without this
+    # exclusion the GW4 wildcard locked ten players for three weeks.
+    chip_events = {c["event"] for c in session.get(f"{BASE_URL}/entry/{MY_TEAM_ID}/history/", timeout=30).json().get("chips", [])
+                   if c["name"] in ROLLOVER_CHIPS}
+    recent_in = {t["element_in"] for t in transfers_log
+                 if t.get("event", 0) >= upcoming_event - RECENT_BUY_WEEKS and t.get("event") not in chip_events}
+    LOCKED_IDS = {pid for pid in recent_in if pid in current_ids
+                  and fpl_elements[pid]["status"] == "a"
+                  and fpl_elements[pid].get("chance_of_playing_next_round") in (None, 100)}
+    protected_names = sorted(fpl_elements[pid]["web_name"] for pid in LOCKED_IDS)
     # Budget must be built from what these players would actually SELL for, not their listed
     # prices -- see compute_selling_prices. Using listed prices overstates the budget and lets the
     # optimiser propose transfers that don't fit in the app.
-    selling_prices = compute_selling_prices(session, MY_TEAM_ID, picks_data["picks"], fpl_elements)
+    selling_prices = compute_selling_prices(session, MY_TEAM_ID, picks, fpl_elements)
     current_value = sum(selling_prices.get(pid, by_id[pid]["now_cost"]) for pid in current_ids)
     listed_value = sum(p["now_cost"] for p in current_players)
     selling_shortfall = listed_value - current_value
@@ -850,6 +904,34 @@ def main():
     # A second, separate lineup solved on NEXT GAMEWEEK ONLY -- this is what the pitch view shows,
     # because that's the decision it supports (who starts, who benches, who takes the armband this
     # week). The 5-GW numbers above stay as the basis for rating and transfer planning.
+    # Playing-time discount notes. The multiplier is min(1, recency-weighted minutes / denominator)
+    # and a single 0-minute match drags it for ~3 weeks even for a fit regular (Joao Pedro, GW7: raw
+    # 6.61 shown as 4.78). start_probability.py tested replacing the rule with a start-probability
+    # model and with "rescue the discounted regular" hybrids: none ranked better overall, because on
+    # average a player who just missed a match does score less next time. So the rule stays, and
+    # the specific case where Nathan should overrule it by hand is flagged instead: fit, unflagged,
+    # played 60+ last match, still discounted.
+    discount_notes = []
+    for pid in current_ids:
+        row = raw_predictions[(raw_predictions["weeks_ahead"] == 1) & (raw_predictions["id"] == pid)]
+        if row.empty:
+            continue
+        mult = float(row["playing_time_multiplier"].iloc[0])
+        element = fpl_elements[pid]
+        if mult < 0.9 and element["status"] == "a" and element.get("chance_of_playing_next_round") in (None, 100):
+            history = session.get(f"{BASE_URL}/element-summary/{pid}/", timeout=30).json().get("history", [])
+            last_minutes = history[-1]["minutes"] if history else 0
+            if last_minutes >= 60:
+                raw = float(row["predicted_points"].iloc[0]) / max(mult, 1e-6)
+                discount_notes.append({
+                    "id": pid, "web_name": element["web_name"], "multiplier": round(mult, 2),
+                    "shown": round(float(row["predicted_points"].iloc[0]), 2), "undiscounted": round(raw, 2),
+                    "last_minutes": int(last_minutes),
+                    "note": (f"{element['web_name']} is shown at {float(row['predicted_points'].iloc[0]):.1f} but the model's "
+                             f"raw view is {raw:.1f}; the gap is a {100 * (1 - mult):.0f}% playing-time discount from a "
+                             f"recent absence, and he is fit and played {int(last_minutes)} minutes last match."),
+                })
+
     next_gw_by_id = {p["id"]: p for p in load_all_players(horizon=HORIZON_LINEUP)}
     next_gw_players = [next_gw_by_id[pid] for pid in current_ids if pid in next_gw_by_id]
     next_gw_lineup = pick_best_lineup(next_gw_players) if next_gw_players else []
@@ -971,6 +1053,28 @@ def main():
         recommended_plan = hold_best
     hold_uncalibrated = HOLD_GAIN_SHRINKAGE is None and hold_best is not None
 
+    # Stickiness (see CHURN_MARGIN): if a previous run for this same gameweek recommended a move that
+    # is still on the table, the new recommendation has to beat it by the margin or we keep it.
+    held_for_stability = False
+    previous_move = None
+    if HISTORY_FILE.exists():
+        for line in HISTORY_FILE.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            past = json.loads(line)
+            if past.get("upcoming_event") == upcoming_event and past.get("recommended"):
+                previous_move = past["recommended"]
+    if previous_move and recommended_plan:
+        prev_in, prev_out = set(previous_move["in_ids"]), set(previous_move["out_ids"])
+        prev_plan = next((p for p in bank_plans
+                          if p["wait_weeks"] == previous_move.get("wait_weeks", 0)
+                          and {x["id"] for x in p["transfers_in"]} == prev_in
+                          and {x["id"] for x in p["transfers_out"]} == prev_out), None)
+        new_in = {x["id"] for x in recommended_plan["transfers_in"]}
+        if prev_plan and new_in != prev_in and recommended_plan["net_gain"] - prev_plan["net_gain"] < CHURN_MARGIN:
+            recommended_plan = prev_plan
+            held_for_stability = True
+
     # Deliberately NOT saving manager_name/team_name into the output file -- this JSON gets baked
     # into a public GitHub Pages dashboard, and a real name in a public git history is effectively
     # permanent. Fine to print to the console for a local sanity check, not fine to publish.
@@ -999,6 +1103,10 @@ def main():
         "hold_uncalibrated": hold_uncalibrated,
         "bank_rejected_as_marginal": bank_rejected_as_marginal,
         "hold_decision_margin": HOLD_DECISION_MARGIN,
+        "churn_margin": CHURN_MARGIN,
+        "held_for_stability": held_for_stability,
+        "protected_recent_buys": protected_names,
+        "discount_notes": discount_notes,
         # current_squad drives the pitch view and is deliberately the NEXT-GAMEWEEK lineup, since
         # that's the decision it informs. horizon_lineup records which it is so the dashboard can
         # label it without hardcoding an assumption.
@@ -1014,9 +1122,35 @@ def main():
     }
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2)
+    # One line per run: what was recommended, so the next run for the same gameweek can apply the
+    # stickiness rule, and so recommendation churn itself becomes measurable later.
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps({
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "event": event, "upcoming_event": upcoming_event,
+            "recommended": ({
+                "wait_weeks": recommended_plan["wait_weeks"], "transfers": recommended_plan["transfers"],
+                "in_ids": [x["id"] for x in recommended_plan["transfers_in"]],
+                "in_names": [x["web_name"] for x in recommended_plan["transfers_in"]],
+                "out_ids": [x["id"] for x in recommended_plan["transfers_out"]],
+                "out_names": [x["web_name"] for x in recommended_plan["transfers_out"]],
+                "net_gain": recommended_plan["net_gain"],
+            } if recommended_plan else None),
+            "captain": captain_recommendation["chosen_name"] if captain_recommendation else None,
+            "held_for_stability": held_for_stability,
+            "protected_recent_buys": protected_names,
+        }) + "\n")
 
     print(f"{manager_name}'s team \"{entry.get('name')}\" going into GW{upcoming_event} "
           f"({free_transfers} free transfer(s) available)")
+    if protected_names:
+        print(f"  Stability: not offering to sell recent buys {', '.join(protected_names)} "
+              f"(bought within {RECENT_BUY_WEEKS} GWs, unflagged).")
+    for note in discount_notes:
+        print(f"  Discount note: {note['note']}")
+    if held_for_stability and previous_move:
+        print(f"  Stability: keeping last run's recommendation ({', '.join(previous_move['out_names'])} -> "
+              f"{', '.join(previous_move['in_names'])}) -- the new best option didn't beat it by {CHURN_MARGIN} pts.")
     print(f"  Budget: £{bank_raw / 10:.1f}m bank + £{current_value / 10:.1f}m squad selling value"
           + (f" (£{selling_shortfall / 10:.1f}m less than listed prices, per FPL's sell-at-half-the-rise rule)"
              if selling_shortfall else " (no player has risen yet, so selling = listed)"))

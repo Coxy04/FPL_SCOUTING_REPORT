@@ -14,3 +14,9 @@ transfer_calibration_scenarios.csv
 fpl_ml_live_scorecard.json
 fpl_ml_deployment_backtest.json
 fpl_ml_captaincy_calibration.json
+odds_cache/
+
+fpl_ml_odds_ablation.json
+fpl_ml_start_probability.json
+fpl_ml_window_ablation.json
+fpl_ml_more_seasons_ablation.json

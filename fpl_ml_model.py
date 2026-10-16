@@ -538,7 +538,11 @@ def match_prior_season_players(elements, player_idlist):
 DEFAULT_SET_PIECE_FLAGS = {"is_penalty_taker": 0, "is_freekick_taker": 0, "is_corner_taker": 0}
 
 
-def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None, prior_set_piece_lookup=None):
+def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None, prior_set_piece_lookup=None, include_unplayed=False):
+    """include_unplayed=True keeps rows where the player registered 0 minutes (actual_minutes
+    column tells them apart). The live model trains on players who played, so the default drops
+    them; start_probability.py needs them to learn who plays at all, and to score the
+    playing-time discount against the outcome it is actually for (a 0 for a non-player)."""
     gw = merged_gw.copy()
     # Older archive seasons (2024-25, used by backtest_deployment.py) predate FPL's defensive-
     # contribution stats and include manager ("AM") rows -- tolerate both rather than crash.
@@ -559,7 +563,7 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
     rows = []
     for row in gw.itertuples():
         current_id = id_map.get(row.element)
-        if current_id is None or row.actual_minutes <= 0:
+        if current_id is None or (row.actual_minutes <= 0 and not include_unplayed):
             continue
 
         was_home = bool(row.was_home)
@@ -610,6 +614,9 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "gw": row.GW,
                 "date": date,
                 "current_id": current_id,
+                "actual_minutes": row.actual_minutes,
+                "team_name": row.team,
+                "opponent_name": opponent_name,
             }
         )
     return pd.DataFrame(rows)

@@ -283,6 +283,39 @@ Calibration results that set the constants:
 Tested along the way and not adopted: the per-position recalibration and the other rejected variants in
 section 7 stand.
 
+## 9. Stability work and the data-source experiments (2026-10-16, evening)
+
+Nathan's complaint: the recommendations swing every week. Measured on the archived snapshots: the model's
+view of the SAME gameweek, from two runs a week apart, has rank correlation 0.92-0.96 over all players
+but only 0.47-0.55 among startable players; 7 of the top 20 change each week; mean movement 0.65 pts on
+predictions that sit ~0.5 pts apart at the top.
+
+Shipped:
+
+| Change | Where |
+|---|---|
+| Tuning runs at most every 28 days (or `-Tune`), seeded by calendar month, 60 trials | `refresh_dashboard.ps1`, `tune_model.py` |
+| Tier column on the player table: bands of one noise unit (1 pt per GW, 3 pts for the 5-GW total) below the best prediction | `dashboard_template.html` |
+| Recent-buy protection: fit, unflagged players bought in the last 3 GWs are not offered for sale; wildcard/free-hit weeks excluded | `fetch_my_team.py` (`RECENT_BUY_WEEKS`, `LOCKED_IDS`) |
+| Stickiness: a new recommended move must beat last run's (same GW) by `CHURN_MARGIN = 1.5` net pts, else last run's stands; runs logged to `my_fpl_team_history.jsonl` | `fetch_my_team.py` |
+| Pending transfers already made for the upcoming GW are applied to the squad, bank and free-transfer count | `fetch_my_team.py` |
+| Discount notes: fit players discounted by a one-off absence (João Pedro: raw 6.6 shown as 4.8) are flagged for a manual overrule | `fetch_my_team.py`, dashboard captain panel |
+| Transfer options exclude on (incoming, outgoing) so equal-value sales for the same buy are all listed | `fetch_my_team.pick_with_transfers` |
+
+Tested on the deployment replay (2024-25 + 2025-26 GW≤N → N+1..N+5) and NOT adopted:
+
+| Experiment | Result | Verdict |
+|---|---|---|
+| Bookmaker odds (football-data.co.uk closing 1X2 + O/U 2.5 → Poisson team goals; `odds_features.py`, `ablation_odds.py`) | cross-position pool Spearman 0.147 without → 0.128 added, 0.125 replacing team form, 0.113 replacing player xG; early-season worse still | Fails the gate in every form. Team xG form already carries the strength signal; odds add correlated noise on small per-position samples. Infrastructure kept; not in the live model. |
+| Start-probability model (`start_probability.py`, trained on all squad rows incl. 0-minute, AUC 0.95) as the playing-time multiplier | current rule Spearman 0.152 / top-10 4.65 / 10.1% non-players in top 30; P(≥60) 0.111 / 4.62 / 5.9%; blended 0.123 / 4.72 / 6.0%; max(rule, P) 0.138 / 4.54; normalised P 0.119 / 4.71 | Halves non-players at the top but loses ranking skill. "Rescue the discounted regular" hurts on average: a player who just missed a match does score less next time. Rule kept; the exception is flagged (discount notes) rather than modelled. |
+| Longer rolling windows 6 / 10 / 15 (`ablation_window_length.py`) | Spearman 0.147 / 0.129 / 0.149; top-10 4.89 / 4.86 / 4.97 | Indistinguishable. Window kept at 6. |
+| More seasons 2022-23..2024-25 (`ablation_more_seasons.py`) | 0.147 → 0.165, top-10 4.89 → 5.12 | Small, real. Worth adopting in the live training set when the defensive-stat columns can be handled (they don't exist before 2025-26). |
+
+Net: the churn is mostly irreducible input noise at the top of a flat ranking. The fixes that help are
+about not *acting* on it (tiers, stickiness, protection, monthly tuning), not about a better signal.
+None of the three new signals cleared the bar, and that is recorded here so nobody re-tries them without
+a new idea.
+
 ## Scripts used
 
 Scratch, in the session scratchpad (not in the repo): `skill_test.py` (section 3 archive numbers and the Understat /

@@ -1,16 +1,37 @@
-# Refreshes the FPL Scouting Report end to end: self-tunes, then refetches data, retrains, rebuilds
-# the dashboard, and pushes it to GitHub Pages. Manual only -- run whenever you want fresh data,
-# there's no scheduled autorun for this. From PowerShell: .\refresh_dashboard.ps1
+# Refreshes the FPL Scouting Report end to end: backtests, retrains, re-picks, rebuilds the dashboard
+# and pushes it to GitHub Pages. Manual only -- run whenever you want fresh data (ideally the morning
+# of every deadline); there's no scheduled autorun for this. From PowerShell: .\refresh_dashboard.ps1
+#
+# Hyperparameter tuning runs at most once every TUNE_EVERY_DAYS. It used to run on every refresh, which
+# meant a random search over a static archive could re-pick different settings on identical data and
+# reshuffle the whole ranking for no reason (see SEASON_REVIEW_GW1-6.md, "why the algorithm changes").
+# A weekly refresh now only retrains on new data; the settings stay put between monthly tunes.
+# Force a tune with: .\refresh_dashboard.ps1 -Tune
+param([switch]$Tune)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
+$TUNE_EVERY_DAYS = 28
 
 Write-Host "Backtesting current accuracy..." -ForegroundColor Cyan
 & ".\fpl_env\Scripts\python.exe" backtest_model.py
 if ($LASTEXITCODE -ne 0) { throw "backtest_model.py failed" }
 
-Write-Host "`nSearching for better hyperparameters (--apply)..." -ForegroundColor Cyan
-& ".\fpl_env\Scripts\python.exe" tune_model.py --apply
-if ($LASTEXITCODE -ne 0) { throw "tune_model.py failed" }
+$tuneDue = $Tune
+if (-not $tuneDue) {
+    if (Test-Path "fpl_ml_tuning.json") {
+        $tuning = Get-Content "fpl_ml_tuning.json" -Raw | ConvertFrom-Json
+        $last = $null
+        if ($tuning.PSObject.Properties.Name -contains "generated_at") { $last = [datetime]$tuning.generated_at }
+        if ($null -eq $last -or ((Get-Date).ToUniversalTime() - $last.ToUniversalTime()).TotalDays -ge $TUNE_EVERY_DAYS) { $tuneDue = $true }
+    } else { $tuneDue = $true }
+}
+if ($tuneDue) {
+    Write-Host "`nSearching for better hyperparameters (--apply, due every $TUNE_EVERY_DAYS days)..." -ForegroundColor Cyan
+    & ".\fpl_env\Scripts\python.exe" tune_model.py --apply
+    if ($LASTEXITCODE -ne 0) { throw "tune_model.py failed" }
+} else {
+    Write-Host "`nSkipping hyperparameter tuning (last tuned within $TUNE_EVERY_DAYS days; pass -Tune to force)." -ForegroundColor DarkGray
+}
 
 Write-Host "`nRunning model (fetch + train + predict)..." -ForegroundColor Cyan
 & ".\fpl_env\Scripts\python.exe" fpl_ml_model.py
@@ -29,7 +50,7 @@ Write-Host "`nBuilding dashboard..." -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) { throw "build_dashboard.py failed" }
 
 Write-Host "`nPushing to GitHub Pages..." -ForegroundColor Cyan
-git add fpl_ml_model.py fpl_ml_accuracy_history.jsonl fpl_ml_team_history.jsonl prediction_history docs/index.html
+git add fpl_ml_model.py fpl_ml_accuracy_history.jsonl fpl_ml_team_history.jsonl my_fpl_team_history.jsonl prediction_history docs/index.html
 
 $staged = git diff --cached --name-only
 if ($staged) {

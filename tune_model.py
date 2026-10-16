@@ -39,14 +39,16 @@ from fpl_ml_model import (
     ensure_utf8_stdout,
 )
 
-# The archive this searches against is static -- it never changes -- so a fixed search seed
-# would make every scheduled run explore the exact same 25 candidates and find the exact same
-# result forever. MODEL_RANDOM_STATE keeps a given candidate's own fit reproducible; SEARCH_SEED
-# is left to vary per run (seeded from the OS) so each run samples a different slice of the space,
-# letting genuine improvements keep ratcheting in over many weeks.
+# The archive this searches against is static, so the search is only as reproducible as its seed.
+# An OS-seeded search re-run on identical data can "find" a different winner and reshuffle the
+# whole ranking for no reason -- one of the churn sources in SEASON_REVIEW_GW1-6.md. The seed is
+# now the calendar month: a re-run within the month reproduces exactly, a new month explores a new
+# slice of the space. refresh_dashboard.ps1 only runs this every 28 days, so more trials per run.
+from datetime import datetime, timezone
+
 MODEL_RANDOM_STATE = 42
-SEARCH_SEED = None
-N_TRIALS = 25
+SEARCH_SEED = int(datetime.now(timezone.utc).strftime("%Y%m"))
+N_TRIALS = 60
 OUTPUT_FILE = "fpl_ml_tuning.json"
 MODEL_FILE = "fpl_ml_model.py"
 # A random search will sometimes "beat" the current config by pure noise even when it isn't
@@ -187,10 +189,12 @@ def main():
             "best_candidate_params": best_params,
         }
 
+    results["generated_at"] = datetime.now(timezone.utc).isoformat()
+    results["search_seed"] = SEARCH_SEED
     with open(OUTPUT_FILE, "w") as f:
         json.dump(results, f, indent=2)
 
-    any_improved = any(r["improved"] for r in results.values())
+    any_improved = any(r["improved"] for k, r in results.items() if isinstance(r, dict))
     if apply and any_improved:
         apply_params_to_source(applied_params)
     elif apply:

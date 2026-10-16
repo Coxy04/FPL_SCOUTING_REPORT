@@ -166,9 +166,10 @@ def build_backtest_elements(merged_gw, player_idlist):
     return elements
 
 
-def build_archive_rows(archive_season=PRIOR_SEASON_ARCHIVE, understat_season=PRIOR_SEASON_UNDERSTAT, understat=None):
+def build_archive_rows(archive_season=PRIOR_SEASON_ARCHIVE, understat_season=PRIOR_SEASON_UNDERSTAT, understat=None, include_unplayed=False):
     """Feature rows for one archived season, built with the live pipeline's own functions. Shared by
-    this script, tune_model.py, backtest_deployment.py and calibrate_captaincy.py."""
+    this script, tune_model.py, backtest_deployment.py, calibrate_captaincy.py and the ablations.
+    include_unplayed keeps 0-minute rows (see build_prior_season_rows)."""
     understat = understat or UnderstatClient()
     team_matches = get_understat_team_matches(understat, understat_season)
     team_matches = add_prematch_team_form(team_matches)
@@ -184,7 +185,7 @@ def build_archive_rows(archive_season=PRIOR_SEASON_ARCHIVE, understat_season=PRI
 
     rows = build_prior_season_rows(
         merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches,
-        prior_per90_by_understat_id, rest_days_lookup, prior_set_piece_lookup,
+        prior_per90_by_understat_id, rest_days_lookup, prior_set_piece_lookup, include_unplayed=include_unplayed,
     )
     rows = add_features(rows)
     rows["season"] = archive_season
