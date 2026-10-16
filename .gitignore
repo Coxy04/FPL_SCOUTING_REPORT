@@ -11,3 +11,6 @@ my_fpl_team.json
 .vscode/
 .claude/
 transfer_calibration_scenarios.csv
+fpl_ml_live_scorecard.json
+fpl_ml_deployment_backtest.json
+fpl_ml_captaincy_calibration.json

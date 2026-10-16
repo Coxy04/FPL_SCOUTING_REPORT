@@ -326,10 +326,16 @@ def pick_best_lineup(players):
     captains), finds the FPL-legal starting XI that maximizes predicted points."""
     prob = pulp.LpProblem("fpl_lineup", pulp.LpMaximize)
     starter = {p["id"]: pulp.LpVariable(f"start_{p['id']}", cat="Binary") for p in players}
+    captain = {p["id"]: pulp.LpVariable(f"cap_{p['id']}", cat="Binary") for p in players}
     by_id = {p["id"]: p for p in players}
 
-    prob += pulp.lpSum(starter[i] * by_id[i]["predicted_points"] for i in starter)
+    # Captain term in the objective, same reasoning as pick_squad: the armband doubles a starter's
+    # points, so a lineup that fields a 7-pt player over a 5-pt one is worth +4 not +2.
+    prob += pulp.lpSum((starter[i] + captain[i]) * by_id[i]["predicted_points"] for i in starter)
     prob += pulp.lpSum(starter.values()) == 11
+    prob += pulp.lpSum(captain.values()) == 1
+    for i in starter:
+        prob += captain[i] <= starter[i]
     for position in SQUAD_QUOTAS:
         starters_in_pos = pulp.lpSum(starter[i] for i in starter if by_id[i]["position"] == position)
         prob += starters_in_pos >= STARTER_MIN[position]
@@ -358,12 +364,15 @@ def pick_with_transfers(current_ids, current_value, bank, all_players, max_trans
     prob = pulp.LpProblem("fpl_transfers", pulp.LpMaximize)
     squad = {p["id"]: pulp.LpVariable(f"squad_{p['id']}", cat="Binary") for p in all_players}
     starter = {p["id"]: pulp.LpVariable(f"start_{p['id']}", cat="Binary") for p in all_players}
+    captain = {p["id"]: pulp.LpVariable(f"cap_{p['id']}", cat="Binary") for p in all_players}
     by_id = {p["id"]: p for p in all_players}
 
     new_players_in = pulp.lpSum(squad[i] for i in squad if i not in current_ids)
+    # Captain term -- see pick_squad for why. Without it a transfer search values a premium at 1x
+    # and will happily sell the one player the armband keeps landing on.
     prob += (
         pulp.lpSum(
-            starter[i] * by_id[i]["predicted_points"] + BENCH_WEIGHT * squad[i] * by_id[i]["predicted_points"]
+            (starter[i] + captain[i]) * by_id[i]["predicted_points"] + BENCH_WEIGHT * squad[i] * by_id[i]["predicted_points"]
             for i in squad
         )
         - TRANSFER_PENALTY * new_players_in
@@ -372,8 +381,10 @@ def pick_with_transfers(current_ids, current_value, bank, all_players, max_trans
     prob += pulp.lpSum(squad.values()) == 15
     prob += pulp.lpSum(by_id[i]["now_cost"] * squad[i] for i in squad) <= bank + current_value
     prob += pulp.lpSum(starter.values()) == 11
+    prob += pulp.lpSum(captain.values()) == 1
     for i in squad:
         prob += starter[i] <= squad[i]
+        prob += captain[i] <= starter[i]
 
     for position, quota in SQUAD_QUOTAS.items():
         prob += pulp.lpSum(squad[i] for i in squad if by_id[i]["position"] == position) == quota
@@ -497,6 +508,62 @@ def pick_top_wildcard_squads(players, budget, top_n=WILDCARD_TOP_N_OPTIONS, per_
 
 def starting_total(squad):
     return round(sum(p["predicted_points"] * (2 if p["is_captain"] else 1) for p in squad if p["is_starter"]), 2)
+
+
+# How far the model's captain pick must beat the most-owned player in the XI before the
+# recommendation follows the model rather than the crowd. The GW1-6 review measured the model's
+# ranking skill among startable players at Spearman 0.05-0.15, and the model's own top pick earned
+# 23 captain pts over GW2-5 against 37 for simply captaining Haaland, the game's most-captained
+# player every week. A weak ranking signal should only override the crowd when it disagrees by
+# more than its own noise. Calibrated by calibrate_captaincy.py on the archive (expanding-window
+# replay of 2025-26, 35 decisions: model argmax vs highest-ownership captain vs this rule at each
+# margin). Measured 2026-10-16: always-model 196 captain pts, always-template 204, rule at margin
+# 0.75 -> 221, 1.0 -> 240, 1.5 -> 242, 2.0 -> 232, 3.0 -> 218. The curve clearly beats both pure
+# strategies between 1 and 2 and peaks at 1.5, following the model in 11 of 35 weeks. One season
+# is a small sample for a captain-points total, so the shape (a clear hump) is the evidence, not
+# the second decimal. Re-run the script when the model changes materially.
+CAPTAIN_TEMPLATE_MARGIN = 1.5
+
+
+def recommend_captain(starters):
+    """The captain decision for a fixed XI: model pick vs the most-owned starter, with the model
+    only overriding the crowd when it clears CAPTAIN_TEMPLATE_MARGIN. Returns a dict the dashboard
+    and console both render, or None for an empty XI."""
+    if not starters:
+        return None
+    model_pick = max(starters, key=lambda p: p["predicted_points"])
+    template_pick = max(starters, key=lambda p: (p.get("ownership_pct") or 0.0))
+    edge = model_pick["predicted_points"] - template_pick["predicted_points"]
+
+    def brief(p):
+        return {"id": p["id"], "web_name": p["web_name"], "predicted_points": round(p["predicted_points"], 2),
+                "haul_prob": round(p.get("haul_prob") or 0.0, 3), "ownership_pct": p.get("ownership_pct")}
+
+    if model_pick["id"] == template_pick["id"]:
+        chosen = model_pick
+        reason = (f"{model_pick['web_name']} is both the model's top pick and the most-owned player in "
+                  f"your XI -- no conflict to resolve.")
+    elif edge >= CAPTAIN_TEMPLATE_MARGIN:
+        chosen = model_pick
+        reason = (f"The model's pick {model_pick['web_name']} beats the most-owned starter "
+                  f"{template_pick['web_name']} by {edge:.1f} pts, above the {CAPTAIN_TEMPLATE_MARGIN:.1f}-pt "
+                  f"margin its ranking skill was measured to justify -- follow the model.")
+    else:
+        chosen = template_pick
+        reason = (f"The model prefers {model_pick['web_name']} but only by {edge:.1f} pts, inside the "
+                  f"{CAPTAIN_TEMPLATE_MARGIN:.1f}-pt margin its ranking skill can resolve -- so the "
+                  f"recommendation defers to the most-owned player in your XI, {template_pick['web_name']} "
+                  f"({template_pick.get('ownership_pct', 0):.0f}% owned). Going against the crowd on a "
+                  f"coin-flip edge is how the GW3-5 captain calls went wrong.")
+    return {
+        "chosen_id": chosen["id"],
+        "chosen_name": chosen["web_name"],
+        "model_pick": brief(model_pick),
+        "template_pick": brief(template_pick),
+        "edge": round(edge, 2),
+        "margin": CAPTAIN_TEMPLATE_MARGIN,
+        "reason": reason,
+    }
 
 
 def evaluate_chip_timing(current_ids, selling_prices, bank_raw):
@@ -759,6 +826,12 @@ def main():
     next_gw_by_id = {p["id"]: p for p in load_all_players(horizon=HORIZON_LINEUP)}
     next_gw_players = [next_gw_by_id[pid] for pid in current_ids if pid in next_gw_by_id]
     next_gw_lineup = pick_best_lineup(next_gw_players) if next_gw_players else []
+    # The armband itself goes through the captaincy rule (model vs most-owned starter), and the
+    # lineup carries whichever it chose so the pitch view and the predicted total agree with it.
+    captain_recommendation = recommend_captain([p for p in next_gw_lineup if p["is_starter"]])
+    if captain_recommendation:
+        for p in next_gw_lineup:
+            p["is_captain"] = p["id"] == captain_recommendation["chosen_id"]
     next_gw_total = starting_total(next_gw_lineup) if next_gw_lineup else 0.0
 
     top_team = pick_squad(all_players)
@@ -904,6 +977,7 @@ def main():
         "current_squad": [{**p, "price_pressure": price_pressure.get(p["id"])}
                           for p in (next_gw_lineup or current_lineup)],
         "horizon_lineup": HORIZON_LINEUP,
+        "captain_recommendation": captain_recommendation,
         "next_gw_predicted_total": next_gw_total,
         "current_predicted_total": current_total,
         "top_team_predicted_total": top_total,
@@ -932,23 +1006,15 @@ def main():
                               for p in sorted(bench, key=lambda p: -p["predicted_points"]))
             print(f"  Bench (best first): {order}")
 
-        # Captaincy DOUBLES whatever a player actually scores, so the mean isn't the only number
-        # that matters -- a wide, calibrated range (predicted_points_low/high, the same 80%
-        # interval already on the main dashboard table, single-fixture and valid only here at
-        # HORIZON_LINEUP=1) says how much upside is actually on the table versus a tight one that
-        # says "reliable but capped". Two players tied on mean can differ hugely on this.
+        # Mean plus P(8+ haul) -- the quantity the armband is really a bet on. The 80% interval that
+        # used to be shown here spanned 0-13 for every realistic option and told you nothing.
         ranked = sorted(starters, key=lambda p: -p["predicted_points"])[:4]
-        ceiling_pick = max(starters, key=lambda p: p.get("predicted_points_high", 0.0))
-        print("  Captain options (mean / floor-ceiling, calibrated 80% range):")
+        print("  Captain options (predicted mean / chance of an 8+ haul / overall ownership):")
         for p in ranked:
-            flag = "  <- highest ceiling" if p["id"] == ceiling_pick["id"] and p["id"] != captain["id"] else ""
             print(f"    {p['web_name']:<16} {p['predicted_points']:>5.2f}  "
-                  f"({p.get('predicted_points_low', 0):.1f}-{p.get('predicted_points_high', 0):.1f}){flag}")
-        if captain and ceiling_pick["id"] != captain["id"] and ceiling_pick in ranked:
-            print(f"  Note: {captain['web_name']} has the higher MEAN, but {ceiling_pick['web_name']} has "
-                  f"the higher CEILING ({ceiling_pick['predicted_points_high']:.1f} vs "
-                  f"{captain['predicted_points_high']:.1f}) -- worth the swap if you want the bigger "
-                  f"swing rather than the safer expected points.")
+                  f"{100 * (p.get('haul_prob') or 0):>4.0f}% haul  {p.get('ownership_pct') or 0:>5.1f}% owned")
+        if captain_recommendation:
+            print(f"  {captain_recommendation['reason']}")
     def league_note(player):
         pct = player.get("league_ownership_pct")
         return f" ({pct:.0f}% of top {league['top_n']})" if league and pct is not None else ""

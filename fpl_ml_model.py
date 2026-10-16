@@ -28,7 +28,7 @@ PREDICTION_HISTORY_COLUMNS = [
     "id", "web_name", "team_name", "position", "now_cost", "event", "weeks_ahead", "fixture_index",
     "opponent_short_name", "was_home", "difficulty", "is_blank",
     "predicted_points", "predicted_points_low", "predicted_points_high", "predicted_points_5gw",
-    "ownership_pct", "status", "chance_of_playing_next_round",
+    "haul_prob", "ownership_pct", "status", "chance_of_playing_next_round",
 ]
 GEM_OWNERSHIP_MAX = 10.0
 GEM_MIN_PREDICTED_POINTS = 3.0
@@ -58,6 +58,10 @@ UNDERSTAT_TEAM_MAP = {
     "Hull City": "Hull",
     "Ipswich Town": "Ipswich",
     "Leeds": "Leeds",
+    # Relegated before this season but present in the 2024-25 archive, which backtest_deployment.py
+    # trains on -- without these two their rows would carry zero team form.
+    "Leicester": "Leicester",
+    "Southampton": "Southampton",
     "Liverpool": "Liverpool",
     "Man City": "Manchester City",
     "Man Utd": "Manchester United",
@@ -129,15 +133,23 @@ DEFAULT_MODEL_PARAMS = {
 # model.
 NON_LGB_PARAM_KEYS = ("half_life_days", "playing_time_denominator")
 
-# Per-position hyperparameters found by tune_model.py's random search (scored across two
-# time-based holdout folds, so these beat the defaults on more than one window, not just one
-# lucky split). MID's default settings already won, so it's left out and falls back to
-# DEFAULT_MODEL_PARAMS. Re-run tune_model.py periodically and update this as the season evolves.
+# Per-position hyperparameters found by tune_model.py's search across two time-based holdout folds.
+#
+# The FWD entry was NOT found by the tuner -- it was found by the GW1-6 season review
+# (SEASON_REVIEW_GW1-6.md, section 4A) and overrides what the tuner had picked. The tuner's old
+# MAE criterion had settled on 100 trees at learning rate 0.02, which with L2 boosting leaves
+# ~0.98^100 = 13% of the signal un-fitted: the FWD model was shrunk toward the mean by construction,
+# its maximum prediction over 10 held-out gameweeks was 4.92, and startable forwards were
+# under-predicted by 0.7-1.3 pts in every fold and live. That is why Haaland ranked below Fernandes
+# for three straight gameweeks. 400 trees at 0.04 removes the bias (max prediction 6.5, captain
+# argmax over the holdout 5.4 -> 8.5 pts) at a cost of +0.04 MAE -- which is exactly why an
+# MAE-driven search rejected it. tune_model.py now scores ranking skill in the startable pool
+# instead of MAE (see backtest_model.selection_loss), so it should keep rather than undo this.
 POSITION_MODEL_PARAMS = {
-    "GK": {"n_estimators": 250, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 2.0, "half_life_days": 100000, "playing_time_denominator": 30},
-    "DEF": {"n_estimators": 150, "learning_rate": 0.03, "num_leaves": 23, "max_depth": 3, "min_child_samples": 10, "reg_lambda": 8.0, "half_life_days": 365, "playing_time_denominator": 75},
-    "MID": {"n_estimators": 150, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 4, "min_child_samples": 80, "reg_lambda": 1.0, "half_life_days": 100000, "playing_time_denominator": 75},
-    "FWD": {"n_estimators": 100, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 3, "min_child_samples": 30, "reg_lambda": 2.0, "half_life_days": 100000, "playing_time_denominator": 90},
+    "GK": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 31, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 1.0, "playing_time_denominator": 30, "half_life_days": 100000},
+    "DEF": {"n_estimators": 450, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 7, "min_child_samples": 30, "reg_lambda": 4.0, "playing_time_denominator": 60, "half_life_days": 365},
+    "MID": {"n_estimators": 100, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 2.0, "playing_time_denominator": 45, "half_life_days": 100000},
+    "FWD": {"n_estimators": 250, "learning_rate": 0.06, "num_leaves": 23, "max_depth": 7, "min_child_samples": 20, "reg_lambda": 1.0, "playing_time_denominator": 90, "half_life_days": 100000},
 }
 
 
@@ -180,11 +192,25 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 0.455, "DEF": 0.791, "MID": 0.978, "FWD": 0.944}
+QUANTILE_MARGIN = {"GK": 1.123, "DEF": 1.504, "MID": 1.195, "FWD": 2.162}
 
 
 def get_quantile_margin(position):
     return QUANTILE_MARGIN.get(position, 0.0)
+
+
+# A "haul" is the outcome captaincy is actually a bet on. The mean prediction can't distinguish a
+# steady 5-every-week player from a 2-or-12 player with the same mean, and the 80% interval turned
+# out to span 0-13 for every realistic captain option (GW5: Haaland 0.1-13.7, Fernandes 0.0-12.7),
+# which carries no information. P(points >= 8) from a dedicated classifier is the quantity the
+# captain decision needs. 8 is FPL's conventional "haul" line (a goal plus bonus, or two returns)
+# and is the same across positions so the probabilities are comparable when choosing a captain.
+HAUL_THRESHOLD = 8
+
+
+def make_haul_model(position):
+    params = {k: v for k, v in get_position_params(position).items() if k not in NON_LGB_PARAM_KEYS}
+    return lgb.LGBMClassifier(objective="binary", random_state=42, verbosity=-1, **params)
 
 
 def explain_predictions(model, X, feature_names, top_n=5):
@@ -454,8 +480,8 @@ def match_understat_players(elements, understat_players):
     return matched, unmatched
 
 
-def load_prior_season_archive():
-    base = f"{ARCHIVE_BASE_URL}/{PRIOR_SEASON_ARCHIVE}"
+def load_prior_season_archive(season=PRIOR_SEASON_ARCHIVE):
+    base = f"{ARCHIVE_BASE_URL}/{season}"
     merged_gw = pd.read_csv(f"{base}/gws/merged_gw.csv", encoding="utf-8", encoding_errors="ignore")
     fixtures = pd.read_csv(f"{base}/fixtures.csv", encoding="utf-8", encoding_errors="ignore")
     teams = pd.read_csv(f"{base}/teams.csv", encoding="utf-8", encoding_errors="ignore")
@@ -511,8 +537,13 @@ DEFAULT_SET_PIECE_FLAGS = {"is_penalty_taker": 0, "is_freekick_taker": 0, "is_co
 
 def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup=None, prior_set_piece_lookup=None):
     gw = merged_gw.copy()
+    # Older archive seasons (2024-25, used by backtest_deployment.py) predate FPL's defensive-
+    # contribution stats and include manager ("AM") rows -- tolerate both rather than crash.
     for column in LAGGED_MATCH_STATS:
+        if column not in gw:
+            gw[column] = 0
         gw[column] = pd.to_numeric(gw[column], errors="coerce").fillna(0)
+    gw = gw[gw["position"].isin(POSITION_MAP.values())]
     gw = gw.sort_values(["element", "GW"]).reset_index(drop=True)
     gw["actual_minutes"] = gw["minutes"]
     gw = add_lagged_match_form(gw, group_col="element")
@@ -998,7 +1029,13 @@ def main():
             "gameweek's matches finish (or before the next deadline, whichever comes first)."
         )
         return
-    print(f"Targeting GW{target_event} (deadline not yet passed).")
+    target = next(e for e in bootstrap["events"] if e["id"] == target_event)
+    deadline = datetime.fromisoformat(target["deadline_time"].replace("Z", "+00:00"))
+    hours_left = (deadline - datetime.now(timezone.utc)).total_seconds() / 3600
+    # Said loudly because GW6 was never refreshed at all (last run 17 Sept, deadline 10 Oct) and
+    # the decisions that week were made with no model behind them. No autorun by standing rule,
+    # so the reminder is the next best thing.
+    print(f"Targeting GW{target_event} -- deadline {deadline:%a %d %b %H:%M} UTC, {hours_left:.0f} hours from now.")
     teams = {team["id"]: team["name"] for team in bootstrap["teams"]}
     team_codes = {team["id"]: team["code"] for team in bootstrap["teams"]}
     team_short_names = {team["id"]: team["short_name"] for team in bootstrap["teams"]}
@@ -1059,6 +1096,7 @@ def main():
 
     models = {}
     quantile_models = {}
+    haul_models = {}
     importance_tables = []
     for position in POSITION_MAP.values():
         subset = training[training["position"] == position]
@@ -1072,6 +1110,10 @@ def main():
         high_model = make_quantile_model(position, QUANTILE_HIGH_ALPHA)
         high_model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
         quantile_models[position] = (low_model, high_model)
+
+        haul_model = make_haul_model(position)
+        haul_model.fit(subset[POSITION_FEATURES], (subset["total_points"] >= HAUL_THRESHOLD).astype(int), sample_weight=weights)
+        haul_models[position] = haul_model
 
         position_importance = pd.DataFrame(
             {
@@ -1098,6 +1140,7 @@ def main():
     upcoming["predicted_points"] = 0.0
     upcoming["predicted_points_low"] = 0.0
     upcoming["predicted_points_high"] = 0.0
+    upcoming["haul_prob"] = 0.0
     upcoming["explanation"] = "[]"
     for position, model in models.items():
         # Blank-gameweek rows (no fixture at all this week) are excluded here rather than left to
@@ -1120,11 +1163,16 @@ def main():
             margin = get_quantile_margin(position)
             upcoming.loc[mask, "predicted_points_low"] = np.minimum(low_raw, high_raw) - margin
             upcoming.loc[mask, "predicted_points_high"] = np.maximum(low_raw, high_raw) + margin
+            upcoming.loc[mask, "haul_prob"] = haul_models[position].predict_proba(X)[:, 1]
 
     for column in ("predicted_points", "predicted_points_low", "predicted_points_high"):
         upcoming[column] = (
             upcoming[column] * upcoming["availability_multiplier"] * upcoming["playing_time_multiplier"]
         ).clip(0, 15)
+    # A player who doesn't play can't haul, so the same availability/playing-time discounts apply.
+    upcoming["haul_prob"] = (
+        upcoming["haul_prob"] * upcoming["availability_multiplier"] * upcoming["playing_time_multiplier"]
+    ).clip(0, 1)
     # The interval must contain the point estimate -- it's the same 80% central interval, just
     # from a separately-trained model, so nothing guarantees that ordering on its own.
     upcoming["predicted_points_low"] = np.minimum(upcoming["predicted_points_low"], upcoming["predicted_points"])

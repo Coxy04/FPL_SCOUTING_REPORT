@@ -1,13 +1,21 @@
 """Uses the backtest as a scoring function to search for better LightGBM hyperparameters per
-position, instead of the one-size-fits-all settings fpl_ml_model.py currently uses everywhere.
+position, instead of the one-size-fits-all settings fpl_ml_model.py would otherwise use.
 
 By default this SEARCHES AND REPORTS ONLY -- pass --apply to actually rewrite
 POSITION_MODEL_PARAMS in fpl_ml_model.py. Tuning against a single holdout window risks picking
 settings that just fit that window's quirks rather than genuinely generalizing, so this scores
 every candidate across two separate time-based folds and averages them, and only accepts a
 candidate that beats the currently-deployed config by more than MIN_IMPROVEMENT_PCT -- both of
-which are what make --apply reasonably safe to run unattended on a schedule. Every change lands
-as a git commit, so a bad update is always a `git revert` away.
+which are what make --apply reasonably safe to run unattended. Every change lands as a git commit,
+so a bad update is always a `git revert` away.
+
+WHAT IT SCORES ON changed after the GW1-6 review. It used to minimise MAE, and on a target where
+63% of outcomes are 2 or less, MAE is minimised by predicting near the median for everyone. That
+criterion had chosen a FWD model of 100 trees at learning rate 0.02 that could not predict above
+4.92 for any forward in ten held-out gameweeks -- so Haaland could never be the captain pick -- and
+rejected the configuration that fixed it because its MAE was 0.04 worse. The score is now
+backtest_model.selection_loss: rank correlation in the startable pool plus a calibration penalty.
+MAE is still printed so the trade-off is visible, but it decides nothing.
 
 Reuses fpl_ml_model.py's and backtest_model.py's own data-building functions so this can't drift
 from what the real pipeline does.
@@ -19,33 +27,23 @@ import sys
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-from understatapi import UnderstatClient
 
-from backtest_model import build_backtest_elements
+from backtest_model import build_archive_rows, ranking_metrics, selection_loss
 from fpl_ml_model import (
     DEFAULT_MODEL_PARAMS,
     NON_LGB_PARAM_KEYS,
     POSITION_FEATURES,
     POSITION_MAP,
     POSITION_MODEL_PARAMS,
-    PRIOR_SEASON_UNDERSTAT,
-    add_features,
-    add_prematch_team_form,
-    build_prior_season_rows,
-    build_team_form_lookup,
     compute_sample_weights,
     ensure_utf8_stdout,
-    get_understat_player_stats,
-    get_understat_team_matches,
-    load_prior_season_archive,
-    match_understat_players,
 )
 
 # The archive this searches against is static -- it never changes -- so a fixed search seed
 # would make every scheduled run explore the exact same 25 candidates and find the exact same
 # result forever. MODEL_RANDOM_STATE keeps a given candidate's own fit reproducible; SEARCH_SEED
-# is left to vary per run (seeded from the OS) so each scheduled run samples a different slice of
-# the space, letting genuine improvements keep ratcheting in over many weeks.
+# is left to vary per run (seeded from the OS) so each run samples a different slice of the space,
+# letting genuine improvements keep ratcheting in over many weeks.
 MODEL_RANDOM_STATE = 42
 SEARCH_SEED = None
 N_TRIALS = 25
@@ -53,27 +51,26 @@ OUTPUT_FILE = "fpl_ml_tuning.json"
 MODEL_FILE = "fpl_ml_model.py"
 # A random search will sometimes "beat" the current config by pure noise even when it isn't
 # genuinely better. Require a real margin, averaged across both folds, before treating a
-# candidate as a win -- this is what keeps an unsupervised/scheduled run from churning on noise.
+# candidate as a win -- this is what keeps an unsupervised run from churning on noise.
 MIN_IMPROVEMENT_PCT = 1.0
 
 # Two separate time-based folds so a "winning" config has to generalize across two different
-# held-out windows, not just fit one window's idiosyncrasies.
+# held-out windows, not just fit one window's idiosyncrasies. NOTE these are both WITHIN one
+# archived season, so they say nothing about cross-season drift (how much last season should count
+# this season) -- that question belongs to backtest_deployment.py, which is why half_life_days is
+# no longer searched here.
 FOLDS = [
     {"train_max_gw": 28, "test_max_gw": 33},
     {"train_max_gw": 33, "test_max_gw": 38},
 ]
 
 SEARCH_SPACE = {
-    "n_estimators": [100, 150, 200, 250, 350, 450],
+    "n_estimators": [100, 150, 200, 250, 350, 450, 600],
     "learning_rate": [0.02, 0.03, 0.04, 0.06, 0.08],
     "num_leaves": [7, 15, 23, 31],
     "max_depth": [3, 4, 5, 6, 7],
     "min_child_samples": [10, 20, 30, 50, 80],
     "reg_lambda": [0.5, 1.0, 2.0, 4.0, 8.0],
-    # 30 days is aggressive recency bias; 100000 is effectively "off" (weights ~1.0 across the
-    # whole archive) -- letting the search find whether recency weighting helps at all, and at
-    # what strength, instead of trusting a hand-picked half-life.
-    "half_life_days": [30, 60, 90, 120, 180, 270, 365, 730, 100000],
     # Discounts predicted_points by min(1, recent_minutes / D). Ablation testing showed a single
     # D=60 for every position was wrong: it helped DEF/FWD but actively hurt GK/MID accuracy, so
     # this is searched per position like everything else here rather than hand-picked once.
@@ -82,8 +79,12 @@ SEARCH_SPACE = {
 }
 
 
-def sample_params(rng):
-    return {key: rng.choice(values) for key, values in SEARCH_SPACE.items()}
+def sample_params(rng, current):
+    params = {key: rng.choice(values) for key, values in SEARCH_SPACE.items()}
+    # Recency weighting is decided by backtest_deployment.py, not searched here -- carry the
+    # deployed value through unchanged so --apply can't silently reset it.
+    params["half_life_days"] = current.get("half_life_days", DEFAULT_MODEL_PARAMS["half_life_days"])
+    return params
 
 
 def make_model(params):
@@ -92,8 +93,10 @@ def make_model(params):
 
 
 def score_params(params, position_rows, folds):
-    """Average MAE for one hyperparameter combo across both folds, for one position's rows."""
-    fold_maes = []
+    """Mean selection_loss (lower is better) for one hyperparameter combo across both folds, for
+    one position's rows. Also returns the mean MAE purely for reporting."""
+    losses = []
+    maes = []
     for fold in folds:
         train = position_rows[position_rows["gw"] <= fold["train_max_gw"]]
         test = position_rows[
@@ -109,28 +112,17 @@ def score_params(params, position_rows, folds):
         denominator = params.get("playing_time_denominator", DEFAULT_MODEL_PARAMS["playing_time_denominator"])
         multiplier = np.minimum(1.0, test["minutes"].to_numpy() / denominator)
         predictions = np.clip(predictions * multiplier, 0, 15)
-        fold_maes.append(float(np.mean(np.abs(predictions - test["total_points"].to_numpy()))))
-    return float(np.mean(fold_maes)) if fold_maes else None
+        frame = pd.DataFrame({"gw": test["gw"].to_numpy(), "pred": predictions, "actual": test["total_points"].to_numpy()})
+        metrics = ranking_metrics(frame)
+        losses.append(selection_loss(metrics))
+        maes.append(metrics["mae"])
+    if not losses:
+        return None, None
+    return float(np.mean(losses)), float(np.mean(maes))
 
 
 def build_dataset():
-    understat = UnderstatClient()
-    team_matches = get_understat_team_matches(understat, PRIOR_SEASON_UNDERSTAT)
-    team_matches = add_prematch_team_form(team_matches)
-    team_form_lookup = build_team_form_lookup(team_matches)
-
-    merged_gw, difficulty_lookup, team_names, player_idlist, rest_days_lookup, prior_set_piece_lookup = load_prior_season_archive()
-    elements = build_backtest_elements(merged_gw, player_idlist)
-
-    understat_players = get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
-    understat_matches, _ = match_understat_players(elements, understat_players)
-    prior_per90_by_understat_id = {p["understat_id"]: p for p in understat_players}
-    id_map = {e: e for e in merged_gw["element"].unique()}
-
-    rows = build_prior_season_rows(
-        merged_gw, difficulty_lookup, team_names, id_map, team_form_lookup, understat_matches, prior_per90_by_understat_id, rest_days_lookup, prior_set_piece_lookup
-    )
-    return add_features(rows)
+    return build_archive_rows()
 
 
 def apply_params_to_source(position_params):
@@ -153,7 +145,8 @@ def apply_params_to_source(position_params):
 
 def main():
     apply = "--apply" in sys.argv
-    print(f"Random search: {N_TRIALS} trials per position, scored across {len(FOLDS)} time-based folds each.")
+    print(f"Random search: {N_TRIALS} trials per position, scored across {len(FOLDS)} time-based folds each "
+          f"on selection loss (1 - pool Spearman + bias penalty), NOT MAE.")
     print(f"Mode: {'APPLY (will rewrite ' + MODEL_FILE + ' on genuine improvements)' if apply else 'report only'}\n")
     rng = random.Random(SEARCH_SEED)
     rows = build_dataset()
@@ -167,25 +160,27 @@ def main():
             continue
 
         current_params = POSITION_MODEL_PARAMS.get(position, DEFAULT_MODEL_PARAMS)
-        current_mae = score_params(current_params, position_rows, FOLDS)
-        best_params, best_mae = current_params, current_mae
+        current_loss, current_mae = score_params(current_params, position_rows, FOLDS)
+        best_params, best_loss, best_mae = current_params, current_loss, current_mae
 
         for _ in range(N_TRIALS):
-            candidate = sample_params(rng)
-            mae = score_params(candidate, position_rows, FOLDS)
-            if mae is not None and mae < best_mae:
-                best_params, best_mae = candidate, mae
+            candidate = sample_params(rng, current_params)
+            loss, mae = score_params(candidate, position_rows, FOLDS)
+            if loss is not None and loss < best_loss:
+                best_params, best_loss, best_mae = candidate, loss, mae
 
-        required_mae = current_mae * (1 - MIN_IMPROVEMENT_PCT / 100)
-        improved = best_mae < required_mae
-        print(f"{position}: current MAE {current_mae:.3f} -> best found MAE {best_mae:.3f} "
+        required_loss = current_loss * (1 - MIN_IMPROVEMENT_PCT / 100)
+        improved = best_loss < required_loss
+        print(f"{position}: current loss {current_loss:.4f} (MAE {current_mae:.3f}) -> best found {best_loss:.4f} (MAE {best_mae:.3f}) "
               f"({'IMPROVED' if improved else f'no improvement past the {MIN_IMPROVEMENT_PCT}% threshold, kept current'})")
         print(f"    best candidate found (adopted or not): {best_params}")
 
         final_params = best_params if improved else current_params
         applied_params[position] = final_params
         results[position] = {
+            "current_loss": round(current_loss, 4),
             "current_mae": round(current_mae, 4),
+            "best_loss": round(best_loss, 4),
             "best_mae": round(best_mae, 4),
             "improved": improved,
             "params": final_params,

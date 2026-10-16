@@ -30,7 +30,7 @@ PLAYER_COLUMNS = [
     "npxg90", "xa90", "xgchain90", "xgbuildup90", "shots90", "key_passes90",
     "clearances_blocks_interceptions", "recoveries", "tackles", "defensive_contribution", "saves",
     "own_days_rest", "opp_days_rest",
-    "status", "chance_of_playing_next_round", "playing_time_multiplier",
+    "status", "chance_of_playing_next_round", "playing_time_multiplier", "haul_prob",
     "explanation", "is_blank", "fixture_index",
 ]
 

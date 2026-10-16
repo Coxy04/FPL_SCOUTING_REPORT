@@ -1086,38 +1086,31 @@ function renderMyTeam() {
   const starters = MY_TEAM.current_squad.filter(p => p.is_starter);
   const bench = MY_TEAM.current_squad.filter(p => !p.is_starter);
 
-  // Captaincy doubles whatever a player actually scores, so the MEAN isn't the only number that
-  // matters -- predicted_points_low/high is the same calibrated 80% range already on the main
-  // player table, single-fixture and valid here because this is the GW-only (HORIZON_LINEUP=1)
-  // lineup carried in current_squad, not the multi-week total. Two players tied on mean can differ
-  // hugely on ceiling -- Fernandes vs Haaland on a live GW4 squad, near-identical means, differed
-  // by over 2 points on ceiling.
+  // Captaincy is a bet on a haul, so each option shows the predicted mean and P(8+ points) from
+  // the dedicated haul classifier (bar). The 80% range that used to be the bar here spanned 0-13
+  // for every realistic option (GW5: Haaland 0.1-13.7, Fernandes 0.0-12.7) and carried no
+  // information. The recommendation itself comes from fetch_my_team.recommend_captain: the model's
+  // pick only overrides the most-owned starter when it clears a measured margin.
   const captainHtml = (() => {
-    const candidates = starters.filter(p => p.predicted_points_high !== undefined)
-      .slice().sort((a, b) => b.predicted_points - a.predicted_points).slice(0, 4);
+    const candidates = starters.slice().sort((a, b) => b.predicted_points - a.predicted_points).slice(0, 4);
     if (!candidates.length) return "";
-    const maxHigh = Math.max(...candidates.map(p => p.predicted_points_high || 0), 0.1);
-    const ceilingPick = candidates.reduce((a, b) => (b.predicted_points_high || 0) > (a.predicted_points_high || 0) ? b : a);
-    const meanPick = candidates[0];
+    const rec = MY_TEAM.captain_recommendation || null;
+    const maxProb = Math.max(...candidates.map(p => p.haul_prob || 0), 0.05);
     const rows = candidates.map(p => {
-      const lo = p.predicted_points_low || 0, hi = p.predicted_points_high || 0, mean = p.predicted_points;
-      const loPct = 100 * lo / maxHigh, meanPct = 100 * mean / maxHigh, hiPct = 100 * hi / maxHigh;
-      const isCeiling = p.id === ceilingPick.id;
+      const prob = p.haul_prob || 0;
+      const isRec = rec && p.id === rec.chosen_id;
       return `
         <div class="chip-bar-row" style="margin:6px 0;">
-          <span class="chip-bar-label" style="width:96px;">${esc(p.web_name)}${isCeiling && p.id !== meanPick.id ? ' <span title="Highest ceiling" style="color:var(--gold);">▲</span>' : ""}</span>
+          <span class="chip-bar-label" style="width:96px;">${esc(p.web_name)}${isRec ? ' <span title="Recommended captain" style="color:var(--gold);font-weight:700;">C</span>' : ""}</span>
           <div class="chip-bar-track" style="position:relative;">
-            <div style="position:absolute; left:${loPct}%; width:${Math.max(1, hiPct - loPct)}%; height:100%; background:var(--rule); border-radius:4px;"></div>
-            <div style="position:absolute; left:calc(${meanPct}% - 1px); width:2px; height:100%; background:var(--accent);"></div>
+            <div style="position:absolute; left:0; width:${Math.max(1, 100 * prob / maxProb)}%; height:100%; background:var(--accent); border-radius:4px; opacity:${isRec ? 1 : 0.55};"></div>
           </div>
-          <span class="chip-bar-value" style="width:auto; font-size:11px;">${fmt(mean)} (${fmt(lo)}-${fmt(hi)})</span>
+          <span class="chip-bar-value" style="width:auto; font-size:11px;">${fmt(p.predicted_points)} pts · ${Math.round(100 * prob)}% haul · ${fmt(p.ownership_pct || 0, 1)}% owned</span>
         </div>`;
     }).join("");
-    const note = ceilingPick.id !== meanPick.id
-      ? `<div class="exp-empty" style="margin-top:6px;">${esc(meanPick.web_name)} has the higher mean, but <b>${esc(ceilingPick.web_name)}</b> has the higher ceiling (${fmt(ceilingPick.predicted_points_high)} vs ${fmt(meanPick.predicted_points_high)}) -- worth the swap for the bigger swing over the safer expected points.</div>`
-      : `<div class="exp-empty" style="margin-top:6px;">${esc(meanPick.web_name)} leads on both mean and ceiling this week -- the straightforward pick.</div>`;
+    const note = rec ? `<div class="exp-empty" style="margin-top:6px;">${esc(rec.reason)}</div>` : "";
     return `
-      <div class="team-row-label" style="margin-top:16px;">Captain options <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- mean and calibrated 80% range (bar), this gameweek only</span></div>
+      <div class="team-row-label" style="margin-top:16px;">Captain options <span style="color:var(--ink-muted);font-weight:400;text-transform:none;">-- predicted mean, chance of an 8+ haul (bar) and ownership, this gameweek only</span></div>
       ${rows}
       ${note}
     `;
