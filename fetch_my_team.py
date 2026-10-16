@@ -397,8 +397,13 @@ def pick_with_transfers(current_ids, current_value, bank, all_players, max_trans
         prob += pulp.lpSum(squad[i] for i in squad if by_id[i]["team_name"] == team_name) <= MAX_PER_CLUB
 
     prob += new_players_in <= max_transfers
-    for combo in exclude_combos:
-        prob += pulp.lpSum(squad[i] for i in combo) <= len(combo) - 1
+    # Each excluded combo is (incoming ids, outgoing ids). Excluding on the incoming set alone --
+    # the original version -- hid every alternative SALE for the same purchase: "Konsa -> De Cuyper"
+    # was listed, "Ajayi -> De Cuyper" (identical value, different player kept) never was. Nathan
+    # asked why Konsa, and the honest answer was a tie the listing had made invisible.
+    for incoming, outgoing in exclude_combos:
+        prob += (pulp.lpSum(squad[i] for i in incoming) + pulp.lpSum(1 - squad[i] for i in outgoing)
+                 <= len(incoming) + len(outgoing) - 1)
 
     status = prob.solve(pulp.PULP_CBC_CMD(msg=0))
     if pulp.LpStatus[status] != "Optimal":
@@ -428,8 +433,10 @@ def pick_top_transfer_scenarios(current_ids, current_value, bank, all_players, m
         new_ids = frozenset(p["id"] for p in squad if p["id"] not in current_ids)
         if not new_ids:
             break
+        squad_ids = {p["id"] for p in squad}
+        out_ids = frozenset(i for i in current_ids if i not in squad_ids)
         scenarios.append(squad)
-        exclude_combos.append(new_ids)
+        exclude_combos.append((new_ids, out_ids))
     return scenarios
 
 
@@ -498,7 +505,8 @@ def pick_top_wildcard_squads(players, budget, top_n=WILDCARD_TOP_N_OPTIONS, per_
         if squad is None:
             break
         scenarios.append({"squad": squad, "total": starting_total(squad)})
-        exclude_combos.append(frozenset(p["id"] for p in squad if p["is_starter"]))
+        # Same (incoming, outgoing) shape as pick_with_transfers expects; a from-scratch build has no outgoing side.
+        exclude_combos.append((frozenset(p["id"] for p in squad if p["is_starter"]), frozenset()))
     if per_week:
         for scenario in scenarios:
             scenario["true_total"] = true_weekly_optimal_value(scenario["squad"], per_week)
