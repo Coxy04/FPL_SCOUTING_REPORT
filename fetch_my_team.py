@@ -525,42 +525,61 @@ def starting_total(squad):
 CAPTAIN_TEMPLATE_MARGIN = 1.5
 
 
-def recommend_captain(starters):
-    """The captain decision for a fixed XI: model pick vs the most-owned starter, with the model
-    only overriding the crowd when it clears CAPTAIN_TEMPLATE_MARGIN. Returns a dict the dashboard
-    and console both render, or None for an empty XI."""
+def recommend_captain(starters, all_players=None):
+    """The captain decision for a fixed XI.
+
+    The template captain is the single most-owned player IN THE GAME this week (passed in via
+    all_players) -- that is exactly what calibrate_captaincy.py replayed, where "template" was each
+    week's highest `selected` player (a Haaland/Salah-type asset the crowd actually captains). If
+    that player is in the XI, the model only overrides him when it clears CAPTAIN_TEMPLATE_MARGIN.
+    If he is NOT in the XI there is no calibrated crowd pick to defer to, and the recommendation is
+    simply the model's top starter. A first version fell back to "most-owned player in your own XI",
+    which is not what was calibrated and produced a captain ranked 9th of 11 in the XI because he
+    happened to be popular -- Nathan called it out, correctly."""
     if not starters:
         return None
     model_pick = max(starters, key=lambda p: p["predicted_points"])
-    template_pick = max(starters, key=lambda p: (p.get("ownership_pct") or 0.0))
-    edge = model_pick["predicted_points"] - template_pick["predicted_points"]
+    pool = all_players if all_players else starters
+    game_template = max(pool, key=lambda p: (p.get("ownership_pct") or 0.0))
+    template_pick = next((p for p in starters if p["id"] == game_template["id"]), None)
 
     def brief(p):
         return {"id": p["id"], "web_name": p["web_name"], "predicted_points": round(p["predicted_points"], 2),
                 "haul_prob": round(p.get("haul_prob") or 0.0, 3), "ownership_pct": p.get("ownership_pct")}
 
-    if model_pick["id"] == template_pick["id"]:
+    edge = None
+    if template_pick is None:
         chosen = model_pick
-        reason = (f"{model_pick['web_name']} is both the model's top pick and the most-owned player in "
-                  f"your XI -- no conflict to resolve.")
-    elif edge >= CAPTAIN_TEMPLATE_MARGIN:
+        reason = (f"The game's template captain this week is {game_template['web_name']} "
+                  f"({game_template.get('ownership_pct', 0):.0f}% owned, predicted "
+                  f"{game_template['predicted_points']:.1f}) and he is not in your XI, so there is no crowd "
+                  f"pick to defer to -- the recommendation is the model's top starter, {model_pick['web_name']}.")
+    elif model_pick["id"] == template_pick["id"]:
         chosen = model_pick
-        reason = (f"The model's pick {model_pick['web_name']} beats the most-owned starter "
-                  f"{template_pick['web_name']} by {edge:.1f} pts, above the {CAPTAIN_TEMPLATE_MARGIN:.1f}-pt "
-                  f"margin its ranking skill was measured to justify -- follow the model.")
+        edge = 0.0
+        reason = (f"{model_pick['web_name']} is both the model's top pick and the game's template captain "
+                  f"-- no conflict to resolve.")
     else:
-        chosen = template_pick
-        reason = (f"The model prefers {model_pick['web_name']} but only by {edge:.1f} pts, inside the "
-                  f"{CAPTAIN_TEMPLATE_MARGIN:.1f}-pt margin its ranking skill can resolve -- so the "
-                  f"recommendation defers to the most-owned player in your XI, {template_pick['web_name']} "
-                  f"({template_pick.get('ownership_pct', 0):.0f}% owned). Going against the crowd on a "
-                  f"coin-flip edge is how the GW3-5 captain calls went wrong.")
+        edge = model_pick["predicted_points"] - template_pick["predicted_points"]
+        if edge >= CAPTAIN_TEMPLATE_MARGIN:
+            chosen = model_pick
+            reason = (f"The model's pick {model_pick['web_name']} beats the template captain "
+                      f"{template_pick['web_name']} by {edge:.1f} pts, above the {CAPTAIN_TEMPLATE_MARGIN:.1f}-pt "
+                      f"margin its ranking skill was measured to justify -- follow the model.")
+        else:
+            chosen = template_pick
+            reason = (f"The model prefers {model_pick['web_name']} but only by {edge:.1f} pts, inside the "
+                      f"{CAPTAIN_TEMPLATE_MARGIN:.1f}-pt margin its ranking skill can resolve -- so the "
+                      f"recommendation stays with the template captain, {template_pick['web_name']} "
+                      f"({template_pick.get('ownership_pct', 0):.0f}% owned). On the archive replay that rule "
+                      f"beat always-model (196) and always-template (204) with 242 captain points.")
     return {
         "chosen_id": chosen["id"],
         "chosen_name": chosen["web_name"],
         "model_pick": brief(model_pick),
-        "template_pick": brief(template_pick),
-        "edge": round(edge, 2),
+        "template_pick": brief(template_pick) if template_pick else None,
+        "game_template": brief(game_template),
+        "edge": round(edge, 2) if edge is not None else None,
         "margin": CAPTAIN_TEMPLATE_MARGIN,
         "reason": reason,
     }
@@ -828,7 +847,8 @@ def main():
     next_gw_lineup = pick_best_lineup(next_gw_players) if next_gw_players else []
     # The armband itself goes through the captaincy rule (model vs most-owned starter), and the
     # lineup carries whichever it chose so the pitch view and the predicted total agree with it.
-    captain_recommendation = recommend_captain([p for p in next_gw_lineup if p["is_starter"]])
+    captain_recommendation = recommend_captain([p for p in next_gw_lineup if p["is_starter"]],
+                                               list(next_gw_by_id.values()))
     if captain_recommendation:
         for p in next_gw_lineup:
             p["is_captain"] = p["id"] == captain_recommendation["chosen_id"]

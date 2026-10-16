@@ -63,6 +63,9 @@ UNDERSTAT_TEAM_MAP = {
     "Leicester": "Leicester",
     "Southampton": "Southampton",
     "Liverpool": "Liverpool",
+    # 2023-24 archive only (ablation_more_seasons.py).
+    "Luton": "Luton",
+    "Sheffield Utd": "Sheffield United",
     "Man City": "Manchester City",
     "Man Utd": "Manchester United",
     "Newcastle": "Newcastle United",
