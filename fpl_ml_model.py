@@ -150,7 +150,7 @@ NON_LGB_PARAM_KEYS = ("half_life_days", "playing_time_denominator")
 # instead of MAE (see backtest_model.selection_loss), so it should keep rather than undo this.
 POSITION_MODEL_PARAMS = {
     "GK": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 31, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 1.0, "playing_time_denominator": 30, "half_life_days": 100000},
-    "DEF": {"n_estimators": 450, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 7, "min_child_samples": 30, "reg_lambda": 4.0, "playing_time_denominator": 60, "half_life_days": 365},
+    "DEF": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 6, "min_child_samples": 30, "reg_lambda": 8.0, "playing_time_denominator": 30, "half_life_days": 365},
     "MID": {"n_estimators": 100, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 2.0, "playing_time_denominator": 45, "half_life_days": 100000},
     "FWD": {"n_estimators": 250, "learning_rate": 0.06, "num_leaves": 23, "max_depth": 7, "min_child_samples": 20, "reg_lambda": 1.0, "playing_time_denominator": 90, "half_life_days": 100000},
 }
