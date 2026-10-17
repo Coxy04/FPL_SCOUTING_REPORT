@@ -55,7 +55,12 @@ git add fpl_ml_model.py fpl_ml_accuracy_history.jsonl fpl_ml_team_history.jsonl 
 $staged = git diff --cached --name-only
 if ($staged) {
     git commit -m "Refresh dashboard data: $(Get-Date -Format 'yyyy-MM-dd')"
-    git push
+    # git writes its push summary ("To https://...") to stderr even on success, which Windows
+    # PowerShell 5.1 turns into a NativeCommandError under $ErrorActionPreference = "Stop" -- the
+    # push had succeeded but the script reported failure. --porcelain puts the summary on stdout;
+    # the exit code is still the real signal.
+    git push --porcelain
+    if ($LASTEXITCODE -ne 0) { throw "git push failed" }
     Write-Host "`nDone. Live at https://coxy04.github.io/FPL_SCOUTING_REPORT/" -ForegroundColor Green
 } else {
     Write-Host "`nNo changes to push (data identical to last run)." -ForegroundColor Yellow
