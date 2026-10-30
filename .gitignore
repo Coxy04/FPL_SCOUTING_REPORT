@@ -20,3 +20,6 @@ fpl_ml_odds_ablation.json
 fpl_ml_start_probability.json
 fpl_ml_window_ablation.json
 fpl_ml_more_seasons_ablation.json
+fpl_ml_signal_study.json
+fpl_ml_fixed_pool_ablation.json
+fpl_ml_train_serve_skew.json
