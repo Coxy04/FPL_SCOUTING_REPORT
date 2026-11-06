@@ -195,7 +195,7 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 0.565, "DEF": 0.986, "MID": 1.171, "FWD": 2.086}
+QUANTILE_MARGIN = {"GK": 0.604, "DEF": 0.497, "MID": 1.16, "FWD": 2.443}
 
 
 def get_quantile_margin(position):
@@ -359,6 +359,65 @@ def understat_from_page(kind, season):
         raise RuntimeError(f"{var} not found in {url}")
     raw = match.group(1).encode("utf-8").decode("unicode_escape")
     return json.loads(raw)
+
+
+def fetch_all_histories(elements, session):
+    """Every player's element-summary history, fetched once. Training rows, prediction rows and the
+    FPL-based team form all need it; fetching it in each place meant ~1,400 API calls per refresh."""
+    histories = {}
+    for player in elements:
+        histories[player["id"]] = get_json(session, f"element-summary/{player['id']}/").get("history", [])
+        time.sleep(0.05)
+    return histories
+
+
+def team_matches_from_fpl(histories, elements, teams):
+    """Team-level xG for/against per fixture from FPL's own per-player xG, in the exact shape
+    get_understat_team_matches returns (team name, date, xg_for, xg_against, was_home) so the form
+    functions downstream don't know the difference. A team's xG for a match is the sum of its
+    players' expected_goals; its xG against is the largest expected_goals_conceded any of its players
+    carried (a 90-minute player carries the team's whole figure). Team names are FPL's own, so
+    use_fpl_team_names() must be called so the lookups map names to themselves.
+
+    Built on 2026-11-06 when Understat's endpoint stopped serving data on a deadline day and the whole
+    pipeline died at the first call -- a single external dependency should never be able to do that
+    when the same information is already in the data we download anyway."""
+    team_of = {p["id"]: teams.get(p["team"], "Unknown") for p in elements}
+    per_fixture = {}
+    for pid, history in histories.items():
+        team = team_of.get(pid)
+        for m in history:
+            if not m.get("kickoff_time") or m.get("fixture") is None:
+                continue
+            key = (m["fixture"], team)
+            entry = per_fixture.setdefault(key, {"team": team, "date": m["kickoff_time"][:10], "was_home": bool(m.get("was_home")), "xg_for": 0.0, "xg_against": 0.0})
+            entry["xg_for"] += float(m.get("expected_goals") or 0)
+            entry["xg_against"] = max(entry["xg_against"], float(m.get("expected_goals_conceded") or 0))
+    frame = pd.DataFrame(list(per_fixture.values()))
+    if frame.empty:
+        return frame
+    return frame.sort_values(["team", "date"]).reset_index(drop=True)
+
+
+def team_matches_from_archive(merged_gw):
+    """Same as team_matches_from_fpl, from an archived season's merged_gw.csv."""
+    g = merged_gw[merged_gw["position"].isin(POSITION_MAP.values())].copy()
+    for c in ("expected_goals", "expected_goals_conceded"):
+        g[c] = pd.to_numeric(g[c], errors="coerce").fillna(0)
+    g["date"] = g["kickoff_time"].astype(str).str[:10]
+    agg = g.groupby(["fixture", "team"]).agg(date=("date", "first"), was_home=("was_home", "first"),
+                                              xg_for=("expected_goals", "sum"), xg_against=("expected_goals_conceded", "max")).reset_index()
+    agg["was_home"] = agg["was_home"].astype(bool)
+    return agg[["team", "date", "xg_for", "xg_against", "was_home"]].sort_values(["team", "date"]).reset_index(drop=True)
+
+
+def use_fpl_team_names(*name_collections):
+    """Point the team-name map at itself for every FPL/archive team name, so form lookups keyed by
+    FPL names resolve when the team-form table was built from FPL data rather than Understat."""
+    for names in name_collections:
+        for name in names:
+            if name:
+                UNDERSTAT_TEAM_MAP[name] = name
 
 
 def get_understat_team_matches(understat, season):
@@ -789,7 +848,7 @@ def set_piece_flags(player):
     }
 
 
-def build_training_rows(elements, fixtures, teams, session, team_form_lookup, understat_matches):
+def build_training_rows(elements, fixtures, teams, session, team_form_lookup, understat_matches, histories=None):
     difficulty_lookup = make_fixture_lookup(fixtures)
     rest_days_lookup = build_rest_days_lookup(fixtures)
     rows = []
@@ -797,8 +856,11 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
         position = POSITION_MAP.get(player["element_type"])
         player_stats = understat_matches.get(player["id"], {})
         set_piece = set_piece_flags(player)
-        history = get_json(session, f"element-summary/{player['id']}/").get("history", [])
-        time.sleep(0.05)
+        if histories is not None:
+            history = histories.get(player["id"], [])
+        else:
+            history = get_json(session, f"element-summary/{player['id']}/").get("history", [])
+            time.sleep(0.05)
         if not history:
             continue
 
@@ -878,7 +940,7 @@ def upcoming_event_numbers(fixtures, count):
     return events[:count]
 
 
-def recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches, team_codes=None, team_short_names=None):
+def recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches, team_codes=None, team_short_names=None, histories=None):
     difficulty_lookup = make_fixture_lookup(fixtures)
     rest_days_lookup = build_rest_days_lookup(fixtures)
     target_events = upcoming_event_numbers(fixtures, MAX_FUTURE_GAMEWEEKS)
@@ -887,7 +949,10 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
     rows = []
     for player in elements:
         player_stats = understat_matches.get(player["id"], {})
-        history = get_json(session, f"element-summary/{player['id']}/").get("history", [])
+        if histories is not None:
+            history = list(histories.get(player["id"], []))
+        else:
+            history = get_json(session, f"element-summary/{player['id']}/").get("history", [])
         history = history[-6:]
         if not history:
             continue
@@ -1101,30 +1166,43 @@ def main():
         player["team_name"] = teams.get(player["team"], "Unknown")
         elements.append(player)
 
+    print("Fetching every player's match history (used for training rows, predictions and team form)...")
+    histories = fetch_all_histories(elements, session)
+
+    print(f"Loading {PRIOR_SEASON_ARCHIVE} archived FPL data to bulk out training...")
+    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup, prior_set_piece_lookup = load_prior_season_archive()
+
     print("Loading Understat data...")
-    understat = UnderstatClient()
-    team_matches = get_understat_team_matches(understat, UNDERSTAT_SEASON)
+    try:
+        understat = UnderstatClient()
+        team_matches = get_understat_team_matches(understat, UNDERSTAT_SEASON)
+        understat_players = get_understat_player_stats(understat, UNDERSTAT_SEASON)
+        prior_team_matches = get_understat_team_matches(understat, PRIOR_SEASON_UNDERSTAT)
+        prior_per90_by_understat_id = {
+            p["understat_id"]: p for p in get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
+        }
+        understat_matches, unmatched = match_understat_players(elements, understat_players)
+        print(f"Matched {len(understat_matches)} players to Understat data.")
+        if unmatched:
+            print(f"Could not match {len(unmatched)} active players to Understat (using 0s for their npxg90/xa90/xgchain90):")
+            for name in unmatched:
+                print(f"  - {name}")
+    except Exception as exc:
+        # Understat down: team form from FPL's own per-match xG instead (same shape, same downstream
+        # code), and the Understat per-90 features sit at 0 for every row, train and predict alike,
+        # so they are inert rather than wrong. See team_matches_from_fpl.
+        print(f"WARNING: Understat unavailable ({type(exc).__name__}: {str(exc)[:80]}). "
+              f"Building team form from FPL's own xG; Understat per-90 features will be zero this run.")
+        team_matches = team_matches_from_fpl(histories, elements, teams)
+        prior_team_matches = team_matches_from_archive(merged_gw)
+        use_fpl_team_names(teams.values(), prior_team_names.values(), merged_gw["team"].unique())
+        understat_matches, prior_per90_by_understat_id = {}, {}
     team_matches = add_prematch_team_form(team_matches)
     team_form_lookup = build_team_form_lookup(team_matches)
     current_team_form = build_current_team_form(team_matches)
-
-    understat_players = get_understat_player_stats(understat, UNDERSTAT_SEASON)
-    understat_matches, unmatched = match_understat_players(elements, understat_players)
-    print(f"Matched {len(understat_matches)} players to Understat data.")
-    if unmatched:
-        print(f"Could not match {len(unmatched)} active players to Understat (using 0s for their npxg90/xa90/xgchain90):")
-        for name in unmatched:
-            print(f"  - {name}")
-
-    print(f"Loading {PRIOR_SEASON_ARCHIVE} archived FPL data to bulk out training...")
-    prior_team_matches = get_understat_team_matches(understat, PRIOR_SEASON_UNDERSTAT)
     prior_team_matches = add_prematch_team_form(prior_team_matches)
     prior_team_form_lookup = build_team_form_lookup(prior_team_matches)
-    prior_per90_by_understat_id = {
-        p["understat_id"]: p for p in get_understat_player_stats(understat, PRIOR_SEASON_UNDERSTAT)
-    }
 
-    merged_gw, prior_difficulty_lookup, prior_team_names, player_idlist, prior_rest_days_lookup, prior_set_piece_lookup = load_prior_season_archive()
     prior_id_map, prior_unmatched = match_prior_season_players(elements, player_idlist)
     print(f"Matched {len(prior_id_map)} of {len(player_idlist)} {PRIOR_SEASON_ARCHIVE} players to the current squad")
     print(f"  ({len(prior_unmatched)} unmatched -- mostly players who left the Premier League, which is expected).")
@@ -1142,7 +1220,7 @@ def main():
     )
 
     print("Building training data...")
-    training = build_training_rows(elements, fixtures, teams, session, team_form_lookup, understat_matches)
+    training = build_training_rows(elements, fixtures, teams, session, team_form_lookup, understat_matches, histories=histories)
     training["source"] = "fpl_live_current_season"
     training = pd.concat([training, prior_rows], ignore_index=True)
     training = add_features(training)
@@ -1191,7 +1269,7 @@ def main():
     importance.to_csv("fpl_ml_feature_importance.csv", index=False)
 
     print("\nPredicting upcoming fixtures...")
-    upcoming = recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches, team_codes, team_short_names)
+    upcoming = recent_player_features(elements, fixtures, teams, session, current_team_form, understat_matches, team_codes, team_short_names, histories=histories)
     featured_upcoming = add_features(upcoming)
     upcoming["predicted_points"] = 0.0
     upcoming["predicted_points_low"] = 0.0
