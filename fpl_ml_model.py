@@ -315,9 +315,55 @@ def normalize_name(name):
     return " ".join(cleaned.split())
 
 
+UNDERSTAT_CACHE_DIR = Path("understat_cache")
+
+
+def understat_cached(kind, season, fetch):
+    """Fetch from Understat, caching the raw JSON; on failure fall back to the last good copy.
+
+    The whole pipeline needs Understat for team form and per-90s, and on 2026-11-06 (a deadline
+    day) its ajax endpoint returned HTML instead of JSON and every script died at the first call.
+    A week-old copy of team form is far better than no refresh at all. Fresh data always wins when
+    the site answers; the cache is only read when it doesn't."""
+    UNDERSTAT_CACHE_DIR.mkdir(exist_ok=True)
+    path = UNDERSTAT_CACHE_DIR / f"{kind}_{season}.json"
+    try:
+        data = fetch()
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return data
+    except Exception as exc:  # understatapi raises requests/JSON errors of several types
+        try:
+            data = understat_from_page(kind, season)
+            print(f"NOTE: Understat ajax endpoint failed ({type(exc).__name__}); parsed {kind} {season} from the league page instead.")
+            path.write_text(json.dumps(data), encoding="utf-8")
+            return data
+        except Exception as page_exc:
+            if path.exists():
+                age_days = (datetime.now(timezone.utc) - datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)).days
+                print(f"WARNING: Understat {kind} {season} unavailable ({type(exc).__name__}, page parse {type(page_exc).__name__}); "
+                      f"using cached copy from {age_days} day(s) ago.")
+                return json.loads(path.read_text(encoding="utf-8"))
+            raise
+
+
+def understat_from_page(kind, season):
+    """The league page embeds the same match and player JSON that the ajax endpoint serves
+    (`var datesData = JSON.parse('...')`, `var playersData = JSON.parse('...')`), hex-escaped.
+    Used when the ajax endpoint answers with HTML, as it did on 2026-11-06."""
+    import re
+    url = f"https://understat.com/league/EPL/{season}"
+    html = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60).text
+    var = {"matches": "datesData", "players": "playersData"}[kind]
+    match = re.search(rf"var {var}\s*=\s*JSON\.parse\('((?:\\.|[^'])*)'\)", html)
+    if not match:
+        raise RuntimeError(f"{var} not found in {url}")
+    raw = match.group(1).encode("utf-8").decode("unicode_escape")
+    return json.loads(raw)
+
+
 def get_understat_team_matches(understat, season):
     league = understat.league("EPL")
-    matches = league.get_match_data(season=season)
+    matches = understat_cached("matches", season, lambda: league.get_match_data(season=season))
     rows = []
     for match in matches:
         if not match["isResult"]:
@@ -385,7 +431,7 @@ def build_current_team_form(frame):
 
 def get_understat_player_stats(understat, season):
     league = understat.league("EPL")
-    players = league.get_player_data(season=season)
+    players = understat_cached("players", season, lambda: league.get_player_data(season=season))
     stats = []
     for player in players:
         minutes = float(player.get("time") or 0)
