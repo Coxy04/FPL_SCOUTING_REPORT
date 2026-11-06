@@ -61,6 +61,8 @@ from fpl_ml_model import (
     make_model,
     make_quantile_model,
     match_understat_players,
+    team_matches_from_archive,
+    use_fpl_team_names,
 )
 
 HOLDOUT_GAMEWEEKS = 5
@@ -170,17 +172,22 @@ def build_archive_rows(archive_season=PRIOR_SEASON_ARCHIVE, understat_season=PRI
     """Feature rows for one archived season, built with the live pipeline's own functions. Shared by
     this script, tune_model.py, backtest_deployment.py, calibrate_captaincy.py and the ablations.
     include_unplayed keeps 0-minute rows (see build_prior_season_rows)."""
-    understat = understat or UnderstatClient()
-    team_matches = get_understat_team_matches(understat, understat_season)
-    team_matches = add_prematch_team_form(team_matches)
-    team_form_lookup = build_team_form_lookup(team_matches)
-
     merged_gw, difficulty_lookup, team_names, player_idlist, rest_days_lookup, prior_set_piece_lookup = load_prior_season_archive(archive_season)
     elements = build_backtest_elements(merged_gw, player_idlist)
-
-    understat_players = get_understat_player_stats(understat, understat_season)
-    understat_matches, _ = match_understat_players(elements, understat_players)
-    prior_per90_by_understat_id = {p["understat_id"]: p for p in understat_players}
+    try:
+        understat = understat or UnderstatClient()
+        team_matches = get_understat_team_matches(understat, understat_season)
+        understat_players = get_understat_player_stats(understat, understat_season)
+        understat_matches, _ = match_understat_players(elements, understat_players)
+        prior_per90_by_understat_id = {p["understat_id"]: p for p in understat_players}
+    except Exception as exc:
+        # Same fallback as the live pipeline: team form from the archive's own per-player xG.
+        print(f"WARNING: Understat unavailable for {archive_season} ({type(exc).__name__}); team form from FPL xG, per-90s zero.")
+        team_matches = team_matches_from_archive(merged_gw)
+        use_fpl_team_names(team_names.values(), merged_gw["team"].unique())
+        understat_matches, prior_per90_by_understat_id = {}, {}
+    team_matches = add_prematch_team_form(team_matches)
+    team_form_lookup = build_team_form_lookup(team_matches)
     id_map = {e: e for e in merged_gw["element"].unique()}
 
     rows = build_prior_season_rows(
