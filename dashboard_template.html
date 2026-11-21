@@ -537,6 +537,18 @@
     </div>
   </section>
 
+  <details class="ref-section" id="match-outlook-section">
+    <summary><h2>Match Outlook</h2><span class="summary-hint">Win / draw / loss, expected goals and clean-sheet odds for every fixture</span></summary>
+    <p class="section-intro" id="match-outlook-intro"></p>
+    <div class="chip-row" id="match-outlook-weeks"></div>
+    <div class="ticker-scroll">
+      <table class="ticker" id="match-outlook">
+        <thead><tr><th>Fixture</th><th class="num">Home</th><th class="num">Draw</th><th class="num">Away</th><th class="num">xG</th><th>Likely score</th><th class="num">Over 2.5</th><th class="num">Home CS</th><th class="num">Away CS</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </details>
+
   <details class="ref-section">
     <summary><h2>Fixture Ticker</h2><span class="summary-hint">Which clubs have a good run coming up</span></summary>
     <p class="section-intro">Every club's next 5 gameweeks at a glance — green is easy, red is hard, per FPL's own difficulty rating. Useful for timing transfers around a good or bad run, rather than picking one player at a time.</p>
@@ -571,6 +583,7 @@ const FEATURES = __FEATURES_JSON__;
 const META = __META_JSON__;
 const TEAM_HISTORY = __TEAM_HISTORY_JSON__;
 const MY_TEAM = __MY_TEAM_JSON__;
+const MATCHES = __MATCHES_JSON__;
 
 function fmt(n, d = 1) { return (typeof n === "number" && !isNaN(n)) ? n.toFixed(d) : "–"; }
 function fmtCost(c) { return "£" + (c / 10).toFixed(1) + "m"; }
@@ -946,6 +959,33 @@ function renderFixtureTicker() {
     return `<tr><td class="team-cell">${esc(team)}</td>${cells.join("")}</tr>`;
   }).join("");
 }
+
+// ---------- match outlook (match_model.py) ----------
+// Team attack/defence ratings from xG, Poisson scorelines with a Dixon-Coles correction. Validated
+// walk-forward on 2025-26 against bookmaker closing odds: log loss 1.036 vs the market's 1.020 and
+// a naive 1.086, agreeing with the market favourite 86% of the time. It approaches the market;
+// it does not beat it, and no line here should be read as a betting edge.
+(function renderMatchOutlook() {
+  const section = document.getElementById("match-outlook-section");
+  if (!MATCHES || !MATCHES.fixtures || !MATCHES.fixtures.length) { if (section) section.style.display = "none"; return; }
+  const events = [...new Set(MATCHES.fixtures.map(f => f.event))].sort((a, b) => a - b);
+  let selected = events[0];
+  const intro = document.getElementById("match-outlook-intro");
+  intro.textContent = "Probabilities from each club's xG-based attack and defence ratings. Validated against the bookmakers' closing odds on last season: close to the market, never ahead of it. Use it to read fixtures and clean-sheet chances, not to bet.";
+  const chips = document.getElementById("match-outlook-weeks");
+  const pct = v => `${Math.round(100 * v)}%`;
+  const render = () => {
+    chips.innerHTML = events.map(e => `<button class="chip${e === selected ? " active" : ""}" data-event="${e}">GW${e}</button>`).join("");
+    const rows = MATCHES.fixtures.filter(f => f.event === selected).sort((a, b) => (a.kickoff || "").localeCompare(b.kickoff || ""));
+    document.querySelector("#match-outlook tbody").innerHTML = rows.map(f => {
+      const fav = Math.max(f.p_home, f.p_draw, f.p_away);
+      const cell = v => `<td class="num" style="${v === fav ? "font-weight:700;" : ""}">${pct(v)}</td>`;
+      return `<tr><td class="team-cell">${esc(f.home_short)} v ${esc(f.away_short)}</td>${cell(f.p_home)}${cell(f.p_draw)}${cell(f.p_away)}<td class="num">${f.xg_home.toFixed(1)}–${f.xg_away.toFixed(1)}</td><td>${esc(f.likely_score)} <span style="color:var(--ink-muted);font-size:11px;">(${pct(f.p_likely_score)})</span></td><td class="num">${pct(f.p_over25)}</td><td class="num">${pct(f.p_cs_home)}</td><td class="num">${pct(f.p_cs_away)}</td></tr>`;
+    }).join("");
+  };
+  chips.addEventListener("click", e => { const b = e.target.closest("button[data-event]"); if (!b) return; selected = Number(b.dataset.event); render(); });
+  render();
+})();
 
 // ---------- shared pitch-view helpers (used by both "My Team" and "Model's Benchmark Pick") ----------
 // team_code comes straight from FPL's own bootstrap-static (the "code" field, not the team id) --

@@ -16,6 +16,7 @@ from understatapi import UnderstatClient
 BASE_URL = "https://fantasy.premierleague.com/api"
 ARCHIVE_BASE_URL = "https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data"
 OUTPUT_FILE = Path("fpl_ml_predictions.csv")
+TEAM_MATCHES_FILE = Path("fpl_ml_team_matches.csv")
 GEMS_OUTPUT_FILE = Path("fpl_ml_hidden_gems.csv")
 META_OUTPUT_FILE = Path("fpl_ml_meta.json")
 # One archived snapshot per gameweek of what the model believed going into it. predictions.csv
@@ -399,7 +400,14 @@ def team_matches_from_fpl(histories, elements, teams):
             if not m.get("kickoff_time") or m.get("fixture") is None:
                 continue
             key = (m["fixture"], team)
-            entry = per_fixture.setdefault(key, {"team": team, "date": m["kickoff_time"][:10], "was_home": bool(m.get("was_home")), "xg_for": 0.0, "xg_against": 0.0})
+            home = bool(m.get("was_home"))
+            entry = per_fixture.setdefault(key, {
+                "team": team, "date": m["kickoff_time"][:10], "was_home": home, "xg_for": 0.0, "xg_against": 0.0,
+                # Extra columns for match_model.py; the form functions ignore them.
+                "fixture": m["fixture"], "opponent": teams.get(m.get("opponent_team"), "Unknown"),
+                "goals_for": m.get("team_h_score") if home else m.get("team_a_score"),
+                "goals_against": m.get("team_a_score") if home else m.get("team_h_score"),
+            })
             entry["xg_for"] += float(m.get("expected_goals") or 0)
             entry["xg_against"] = max(entry["xg_against"], float(m.get("expected_goals_conceded") or 0))
     frame = pd.DataFrame(list(per_fixture.values()))
@@ -408,16 +416,22 @@ def team_matches_from_fpl(histories, elements, teams):
     return frame.sort_values(["team", "date"]).reset_index(drop=True)
 
 
-def team_matches_from_archive(merged_gw):
-    """Same as team_matches_from_fpl, from an archived season's merged_gw.csv."""
+def team_matches_from_archive(merged_gw, team_names=None):
+    """Same as team_matches_from_fpl, from an archived season's merged_gw.csv. With team_names
+    (archive team id -> name) the opponent and goals columns match_model.py needs are filled too."""
     g = merged_gw[merged_gw["position"].isin(POSITION_MAP.values())].copy()
-    for c in ("expected_goals", "expected_goals_conceded"):
-        g[c] = pd.to_numeric(g[c], errors="coerce").fillna(0)
+    for c in ("expected_goals", "expected_goals_conceded", "team_h_score", "team_a_score"):
+        g[c] = pd.to_numeric(g.get(c, 0), errors="coerce")
     g["date"] = g["kickoff_time"].astype(str).str[:10]
-    agg = g.groupby(["fixture", "team"]).agg(date=("date", "first"), was_home=("was_home", "first"),
-                                              xg_for=("expected_goals", "sum"), xg_against=("expected_goals_conceded", "max")).reset_index()
-    agg["was_home"] = agg["was_home"].astype(bool)
-    return agg[["team", "date", "xg_for", "xg_against", "was_home"]].sort_values(["team", "date"]).reset_index(drop=True)
+    g["was_home"] = g["was_home"].astype(bool)
+    g["goals_for"] = np.where(g["was_home"], g["team_h_score"], g["team_a_score"])
+    g["goals_against"] = np.where(g["was_home"], g["team_a_score"], g["team_h_score"])
+    g["opponent"] = g["opponent_team"].map(team_names) if team_names else "Unknown"
+    agg = g.groupby(["fixture", "team"]).agg(date=("date", "first"), was_home=("was_home", "first"), opponent=("opponent", "first"),
+                                              xg_for=("expected_goals", "sum"), xg_against=("expected_goals_conceded", "max"),
+                                              goals_for=("goals_for", "first"), goals_against=("goals_against", "first")).reset_index()
+    agg["xg_for"] = agg["xg_for"].fillna(0); agg["xg_against"] = agg["xg_against"].fillna(0)
+    return agg[["team", "date", "xg_for", "xg_against", "was_home", "fixture", "opponent", "goals_for", "goals_against"]].sort_values(["team", "date"]).reset_index(drop=True)
 
 
 def use_fpl_team_names(*name_collections):
@@ -1203,9 +1217,12 @@ def main():
         print(f"WARNING: Understat unavailable ({type(exc).__name__}: {str(exc)[:80]}). "
               f"Building team form from FPL's own xG; Understat per-90 features will be zero this run.")
         team_matches = team_matches_from_fpl(histories, elements, teams)
-        prior_team_matches = team_matches_from_archive(merged_gw)
+        prior_team_matches = team_matches_from_archive(merged_gw, prior_team_names)
         use_fpl_team_names(teams.values(), prior_team_names.values(), merged_gw["team"].unique())
         understat_matches, prior_per90_by_understat_id = {}, {}
+    # The FPL-derived team-match table (with goals and fixture ids) feeds match_model.py, whichever
+    # source the form features came from this run.
+    team_matches_from_fpl(histories, elements, teams).to_csv(TEAM_MATCHES_FILE, index=False)
     team_matches = add_prematch_team_form(team_matches)
     team_form_lookup = build_team_form_lookup(team_matches)
     current_team_form = build_current_team_form(team_matches)

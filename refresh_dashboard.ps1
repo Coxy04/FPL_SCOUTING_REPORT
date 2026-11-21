@@ -37,6 +37,10 @@ Write-Host "`nRunning model (fetch + train + predict)..." -ForegroundColor Cyan
 & ".\fpl_env\Scripts\python.exe" fpl_ml_model.py
 if ($LASTEXITCODE -ne 0) { throw "fpl_ml_model.py failed" }
 
+Write-Host "`nPredicting match results (win/draw/loss, scorelines, clean sheets)..." -ForegroundColor Cyan
+& ".\fpl_env\Scripts\python.exe" match_model.py
+if ($LASTEXITCODE -ne 0) { throw "match_model.py failed" }
+
 Write-Host "`nScoring past picks / picking this gameweek's team..." -ForegroundColor Cyan
 & ".\fpl_env\Scripts\python.exe" pick_team.py
 if ($LASTEXITCODE -ne 0) { throw "pick_team.py failed" }
