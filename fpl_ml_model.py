@@ -150,9 +150,9 @@ NON_LGB_PARAM_KEYS = ("half_life_days", "playing_time_denominator")
 # instead of MAE (see backtest_model.selection_loss), so it should keep rather than undo this.
 POSITION_MODEL_PARAMS = {
     "GK": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 31, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 1.0, "playing_time_denominator": 30, "half_life_days": 100000},
-    "DEF": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 7, "max_depth": 6, "min_child_samples": 30, "reg_lambda": 8.0, "playing_time_denominator": 30, "half_life_days": 365},
-    "MID": {"n_estimators": 100, "learning_rate": 0.03, "num_leaves": 15, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 2.0, "playing_time_denominator": 45, "half_life_days": 100000},
-    "FWD": {"n_estimators": 250, "learning_rate": 0.06, "num_leaves": 23, "max_depth": 7, "min_child_samples": 20, "reg_lambda": 1.0, "playing_time_denominator": 90, "half_life_days": 100000},
+    "DEF": {"n_estimators": 100, "learning_rate": 0.08, "num_leaves": 23, "max_depth": 4, "min_child_samples": 10, "reg_lambda": 1.0, "playing_time_denominator": 90, "half_life_days": 365},
+    "MID": {"n_estimators": 200, "learning_rate": 0.08, "num_leaves": 7, "max_depth": 3, "min_child_samples": 80, "reg_lambda": 0.5, "playing_time_denominator": 75, "half_life_days": 100000},
+    "FWD": {"n_estimators": 250, "learning_rate": 0.04, "num_leaves": 31, "max_depth": 4, "min_child_samples": 50, "reg_lambda": 1.0, "playing_time_denominator": 30, "half_life_days": 100000},
 }
 
 
@@ -195,7 +195,7 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 0.604, "DEF": 0.497, "MID": 1.16, "FWD": 2.443}
+QUANTILE_MARGIN = {"GK": 0.187, "DEF": 0.497, "MID": 1.141, "FWD": 2.457}
 
 
 def get_quantile_margin(position):
@@ -253,10 +253,19 @@ def ensure_utf8_stdout():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
-def get_json(session, endpoint):
-    response = session.get(f"{BASE_URL}/{endpoint}", timeout=30)
-    response.raise_for_status()
-    return response.json()
+def get_json(session, endpoint, tries=4):
+    """FPL's API drops or truncates responses under deadline-morning load (IncompleteRead,
+    connection aborts). One bad response out of ~700 must not kill a refresh two hours before
+    the deadline, which it did on 2026-11-21."""
+    for attempt in range(tries):
+        try:
+            response = session.get(f"{BASE_URL}/{endpoint}", timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError):
+            if attempt == tries - 1:
+                raise
+            time.sleep(2 * (attempt + 1))
 
 
 def make_fixture_lookup(fixtures):
