@@ -584,6 +584,7 @@ const META = __META_JSON__;
 const TEAM_HISTORY = __TEAM_HISTORY_JSON__;
 const MY_TEAM = __MY_TEAM_JSON__;
 const MATCHES = __MATCHES_JSON__;
+const LEAGUE_MATCHES = __LEAGUES_JSON__;
 
 function fmt(n, d = 1) { return (typeof n === "number" && !isNaN(n)) ? n.toFixed(d) : "–"; }
 function fmtCost(c) { return "£" + (c / 10).toFixed(1) + "m"; }
@@ -967,23 +968,50 @@ function renderFixtureTicker() {
 // it does not beat it, and no line here should be read as a betting edge.
 (function renderMatchOutlook() {
   const section = document.getElementById("match-outlook-section");
-  if (!MATCHES || !MATCHES.fixtures || !MATCHES.fixtures.length) { if (section) section.style.display = "none"; return; }
-  const events = [...new Set(MATCHES.fixtures.map(f => f.event))].sort((a, b) => a - b);
-  let selected = events[0];
+  const hasPL = MATCHES && MATCHES.fixtures && MATCHES.fixtures.length;
+  const leagues = (LEAGUE_MATCHES && LEAGUE_MATCHES.leagues) || {};
+  if (!hasPL && !Object.keys(leagues).length) { if (section) section.style.display = "none"; return; }
+  // The Premier League view uses the FPL-xG model (match_model.py); every other division uses the
+  // shots-on-target proxy model (leagues_model.py). Each league's own validation against the
+  // bookmakers is shown in the intro so the number next to a fixture carries its own health warning.
+  const options = [];
+  if (hasPL) options.push({ key: "PL", label: "Premier League", fixtures: MATCHES.fixtures, weeks: true, validation: null });
+  for (const [div, league] of Object.entries(leagues)) {
+    if (div === "E0") continue;
+    options.push({ key: div, label: league.name, fixtures: league.fixtures, weeks: false, validation: league.validation });
+  }
+  let league = options[0];
+  let selectedWeek = null;
   const intro = document.getElementById("match-outlook-intro");
-  intro.textContent = "Probabilities from each club's xG-based attack and defence ratings. Validated against the bookmakers' closing odds on last season: close to the market, never ahead of it. Use it to read fixtures and clean-sheet chances, not to bet.";
   const chips = document.getElementById("match-outlook-weeks");
   const pct = v => `${Math.round(100 * v)}%`;
   const render = () => {
-    chips.innerHTML = events.map(e => `<button class="chip${e === selected ? " active" : ""}" data-event="${e}">GW${e}</button>`).join("");
-    const rows = MATCHES.fixtures.filter(f => f.event === selected).sort((a, b) => (a.kickoff || "").localeCompare(b.kickoff || ""));
+    const leagueChips = options.map(o => `<button class="chip${o.key === league.key ? " active" : ""}" data-league="${o.key}">${esc(o.label)}</button>`).join("");
+    let weekChips = "";
+    let rows = league.fixtures.slice();
+    if (league.weeks) {
+      const events = [...new Set(rows.map(f => f.event))].sort((a, b) => a - b);
+      if (!events.includes(selectedWeek)) selectedWeek = events[0];
+      weekChips = `<span style="width:100%;"></span>` + events.map(e => `<button class="chip${e === selectedWeek ? " active" : ""}" data-event="${e}">GW${e}</button>`).join("");
+      rows = rows.filter(f => f.event === selectedWeek).sort((a, b) => (a.kickoff || "").localeCompare(b.kickoff || ""));
+    }
+    chips.innerHTML = leagueChips + weekChips;
+    const v = league.validation;
+    intro.textContent = league.weeks
+      ? "Premier League: probabilities from each club's xG-based attack and defence ratings (FPL's own per-match xG). Validated walk-forward on last season against the bookmakers' closing odds: log loss 1.036 vs the market's 1.020, agreeing with the market favourite 86% of the time. Close to the market, never ahead of it. Read fixtures and clean-sheet chances; don't bet on it."
+      : `${league.label}: no free xG below the Premier League, so ratings use a ${v && v.params ? v.params.proxy : "shots-on-target"} proxy from football-data.co.uk. Validated the same way on last season: log loss ${v ? v.model_log_loss.toFixed(3) : "?"} vs the market's ${v ? v.market_log_loss.toFixed(3) : "?"} (naive ${v ? v.naive_log_loss.toFixed(3) : "?"}), ${v ? Math.round(v.favourite_agreement * 100) : "?"}% agreement with the market favourite. Same warning: not a betting edge.`;
     document.querySelector("#match-outlook tbody").innerHTML = rows.map(f => {
       const fav = Math.max(f.p_home, f.p_draw, f.p_away);
-      const cell = v => `<td class="num" style="${v === fav ? "font-weight:700;" : ""}">${pct(v)}</td>`;
-      return `<tr><td class="team-cell">${esc(f.home_short)} v ${esc(f.away_short)}</td>${cell(f.p_home)}${cell(f.p_draw)}${cell(f.p_away)}<td class="num">${f.xg_home.toFixed(1)}–${f.xg_away.toFixed(1)}</td><td>${esc(f.likely_score)} <span style="color:var(--ink-muted);font-size:11px;">(${pct(f.p_likely_score)})</span></td><td class="num">${pct(f.p_over25)}</td><td class="num">${pct(f.p_cs_home)}</td><td class="num">${pct(f.p_cs_away)}</td></tr>`;
-    }).join("");
+      const cell = x => `<td class="num" style="${x === fav ? "font-weight:700;" : ""}">${pct(x)}</td>`;
+      const name = league.weeks ? `${esc(f.home_short)} v ${esc(f.away_short)}` : `${esc(f.home)} v ${esc(f.away)} <span style="color:var(--ink-muted);font-size:11px;">${esc(f.date)}</span>`;
+      return `<tr><td class="team-cell">${name}</td>${cell(f.p_home)}${cell(f.p_draw)}${cell(f.p_away)}<td class="num">${f.xg_home.toFixed(1)}–${f.xg_away.toFixed(1)}</td><td>${esc(f.likely_score)} <span style="color:var(--ink-muted);font-size:11px;">(${pct(f.p_likely_score)})</span></td><td class="num">${pct(f.p_over25)}</td><td class="num">${pct(f.p_cs_home)}</td><td class="num">${pct(f.p_cs_away)}</td></tr>`;
+    }).join("") || `<tr><td colspan="9" style="color:var(--ink-muted);">No upcoming fixtures listed yet for this league.</td></tr>`;
   };
-  chips.addEventListener("click", e => { const b = e.target.closest("button[data-event]"); if (!b) return; selected = Number(b.dataset.event); render(); });
+  chips.addEventListener("click", e => {
+    const l = e.target.closest("button[data-league]"); const w = e.target.closest("button[data-event]");
+    if (l) { league = options.find(o => o.key === l.dataset.league); render(); }
+    else if (w) { selectedWeek = Number(w.dataset.event); render(); }
+  });
   render();
 })();
 

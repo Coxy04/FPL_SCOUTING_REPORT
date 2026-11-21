@@ -16,6 +16,7 @@ META_FILE = Path("fpl_ml_meta.json")
 TEAM_HISTORY_FILE = Path("fpl_ml_team_history.jsonl")
 MY_TEAM_FILE = Path("my_fpl_team.json")
 MATCHES_FILE = Path("fpl_ml_match_predictions.json")
+LEAGUES_FILE = Path("fpl_ml_leagues_predictions.json")
 OUTPUT_FILE = Path("docs/index.html")
 
 PLAYER_COLUMNS = [
@@ -86,6 +87,7 @@ def build():
 
     my_team = json.loads(MY_TEAM_FILE.read_text()) if MY_TEAM_FILE.exists() else None
     matches = json.loads(MATCHES_FILE.read_text()) if MATCHES_FILE.exists() else None
+    leagues = json.loads(LEAGUES_FILE.read_text(encoding="utf-8")) if LEAGUES_FILE.exists() else None
 
     template = Path("dashboard_template.html").read_text(encoding="utf-8")
     html = (
@@ -96,6 +98,7 @@ def build():
         .replace("__TEAM_HISTORY_JSON__", safe_json(team_history))
         .replace("__MY_TEAM_JSON__", safe_json(my_team))
         .replace("__MATCHES_JSON__", safe_json(matches))
+        .replace("__LEAGUES_JSON__", safe_json(leagues))
     )
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(html, encoding="utf-8")

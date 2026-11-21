@@ -1,0 +1,146 @@
+{
+  "E0": {
+    "params": {
+      "half_life": 25,
+      "shrink": 1,
+      "rho": -0.14,
+      "proxy": "blend",
+      "conversion": 0.3275527192008879
+    },
+    "fit_log_loss": 0.9778140023147233,
+    "test_matches": 340,
+    "model_log_loss": 1.0262569812524993,
+    "market_log_loss": 1.0196516264728763,
+    "naive_log_loss": 1.0848857296703471,
+    "model_accuracy": 0.4852941176470588,
+    "market_accuracy": 0.48823529411764705,
+    "favourite_agreement": 0.9088235294117647,
+    "gap_closed_pct": 89.87438401716376
+  },
+  "E1": {
+    "params": {
+      "half_life": 25,
+      "shrink": 1,
+      "rho": -0.08,
+      "proxy": "blend",
+      "conversion": 0.3175297018605694
+    },
+    "fit_log_loss": 1.0208998741235904,
+    "test_matches": 512,
+    "model_log_loss": 1.056089807110318,
+    "market_log_loss": 1.0390266184792214,
+    "naive_log_loss": 1.0813093284663895,
+    "model_accuracy": 0.439453125,
+    "market_accuracy": 0.4609375,
+    "favourite_agreement": 0.861328125,
+    "gap_closed_pct": 59.644997597658985
+  },
+  "E2": {
+    "params": {
+      "half_life": 15,
+      "shrink": 2,
+      "rho": 0.0,
+      "proxy": "blend",
+      "conversion": 0.32461328480436763
+    },
+    "fit_log_loss": 1.0206772196342788,
+    "test_matches": 512,
+    "model_log_loss": 1.0400100084487907,
+    "market_log_loss": 1.0222018970309859,
+    "naive_log_loss": 1.069726974636077,
+    "model_accuracy": 0.482421875,
+    "market_accuracy": 0.501953125,
+    "favourite_agreement": 0.845703125,
+    "gap_closed_pct": 62.529021907589396
+  },
+  "E3": {
+    "params": {
+      "half_life": 15,
+      "shrink": 1,
+      "rho": -0.14,
+      "proxy": "sot",
+      "conversion": 0.3323435609809744
+    },
+    "fit_log_loss": 1.0647323973004998,
+    "test_matches": 512,
+    "model_log_loss": 1.0458055033336522,
+    "market_log_loss": 1.0210277003821737,
+    "naive_log_loss": 1.0813193655442173,
+    "model_accuracy": 0.484375,
+    "market_accuracy": 0.509765625,
+    "favourite_agreement": 0.80859375,
+    "gap_closed_pct": 58.903435682388036
+  },
+  "SC0": {
+    "params": {
+      "half_life": 25,
+      "shrink": 4,
+      "rho": 0.0,
+      "proxy": "sot",
+      "conversion": 0.3315535214848716
+    },
+    "fit_log_loss": 0.9572283221825016,
+    "test_matches": 188,
+    "model_log_loss": 0.9796781047354627,
+    "market_log_loss": 0.9448625888573658,
+    "naive_log_loss": 1.0501786300131315,
+    "model_accuracy": 0.526595744680851,
+    "market_accuracy": 0.5478723404255319,
+    "favourite_agreement": 0.8670212765957447,
+    "gap_closed_pct": 66.94186802312136
+  },
+  "SC1": {
+    "params": {
+      "half_life": 25,
+      "shrink": 1,
+      "rho": 0.0,
+      "proxy": "blend",
+      "conversion": 0.33841247342310415
+    },
+    "fit_log_loss": 1.0121673892074394,
+    "test_matches": 140,
+    "model_log_loss": 1.0845657366909538,
+    "market_log_loss": 1.0689352665456513,
+    "naive_log_loss": 1.0854541263113235,
+    "model_accuracy": 0.4357142857142857,
+    "market_accuracy": 0.4142857142857143,
+    "favourite_agreement": 0.8142857142857143,
+    "gap_closed_pct": 5.378032339834392
+  },
+  "SC2": {
+    "params": {
+      "half_life": 25,
+      "shrink": 4,
+      "rho": 0.0,
+      "proxy": "sot",
+      "conversion": 0.34229274611398963
+    },
+    "fit_log_loss": 1.061036571301505,
+    "test_matches": 140,
+    "model_log_loss": 1.0623074544244122,
+    "market_log_loss": 1.0473157456338664,
+    "naive_log_loss": 1.0956674746201835,
+    "model_accuracy": 0.45714285714285713,
+    "market_accuracy": 0.4642857142857143,
+    "favourite_agreement": 0.8571428571428571,
+    "gap_closed_pct": 68.9944721629536
+  },
+  "SC3": {
+    "params": {
+      "half_life": 25,
+      "shrink": 4,
+      "rho": 0.0,
+      "proxy": "blend",
+      "conversion": 0.3394994559303591
+    },
+    "fit_log_loss": 1.0210591147269537,
+    "test_matches": 140,
+    "model_log_loss": 1.0723749896239134,
+    "market_log_loss": 1.056173270052776,
+    "naive_log_loss": 1.0886108131092358,
+    "model_accuracy": 0.42142857142857143,
+    "market_accuracy": 0.4642857142857143,
+    "favourite_agreement": 0.7928571428571428,
+    "gap_closed_pct": 50.052568584071764
+  }
+}
