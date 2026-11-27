@@ -151,6 +151,9 @@ HISTORY_FILE = Path("my_fpl_team_history.jsonl")
 # a parameter through each call. Only ever applied to ids in the CURRENT squad, so from-scratch
 # wildcard/free-hit searches (current_ids empty) are unaffected.
 LOCKED_IDS = set()
+# --target NAME [NAME ...]: players the transfer search must bring in (or keep, if owned). Pairs with
+# --keep: "what is the best way to get Isak in, keeping my three defenders" is one run, not a guess.
+TARGET_IDS = set()
 
 # Rolling window (in weeks) used to judge Wildcard timing -- see evaluate_chip_timing. Set equal
 # to the model's own horizon: a wildcard's whole case rests on a gap that persists across the
@@ -422,6 +425,9 @@ def pick_with_transfers(current_ids, current_value, bank, all_players, max_trans
     for i in LOCKED_IDS & set(current_ids):
         if i in squad:
             prob += squad[i] == 1  # recent buy, fit: not for sale this week (see RECENT_BUY_WEEKS)
+    for i in TARGET_IDS:
+        if i in squad and current_ids:  # only in the real-squad search, never the unconstrained wildcard pick
+            prob += squad[i] == 1  # --target: must end up in the squad
     # Each excluded combo is (incoming ids, outgoing ids). Excluding on the incoming set alone --
     # the original version -- hid every alternative SALE for the same purchase: "Konsa -> De Cuyper"
     # was listed, "Ajayi -> De Cuyper" (identical value, different player kept) never was. Nathan
@@ -901,6 +907,12 @@ def main():
         if missing:
             print(f"  --keep: not in the squad, ignored: {sorted(missing)}")
         LOCKED_IDS |= kept
+    global TARGET_IDS
+    if "--target" in sys.argv:
+        target_names = {n.lower() for n in sys.argv[sys.argv.index("--target") + 1:] if not n.startswith("--")}
+        TARGET_IDS = {pid for pid, e in fpl_elements.items() if e["web_name"].lower() in target_names}
+        if TARGET_IDS:
+            print(f"  --target: every plan must include {sorted(fpl_elements[pid]['web_name'] for pid in TARGET_IDS)}")
     protected_names = sorted(fpl_elements[pid]["web_name"] for pid in LOCKED_IDS)
     # Budget must be built from what these players would actually SELL for, not their listed
     # prices -- see compute_selling_prices. Using listed prices overstates the budget and lets the
