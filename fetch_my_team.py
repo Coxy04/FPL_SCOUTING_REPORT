@@ -907,6 +907,11 @@ def main():
         if missing:
             print(f"  --keep: not in the squad, ignored: {sorted(missing)}")
         LOCKED_IDS |= kept
+    # --unlock NAME [NAME ...]: lift recent-buy protection for a player so a sale can be costed
+    # ("why not Haaland to Isak?" needs Haaland sellable to get a number, not a shrug).
+    if "--unlock" in sys.argv:
+        unlock_names = {n.lower() for n in sys.argv[sys.argv.index("--unlock") + 1:] if not n.startswith("--")}
+        LOCKED_IDS = {pid for pid in LOCKED_IDS if fpl_elements[pid]["web_name"].lower() not in unlock_names}
     global TARGET_IDS
     if "--target" in sys.argv:
         target_names = {n.lower() for n in sys.argv[sys.argv.index("--target") + 1:] if not n.startswith("--")}
