@@ -126,7 +126,7 @@ def pick_squad(players, budget=BUDGET, value_key="predicted_points"):
 # covering the whole window, the exact trap the dashboard's own rangeCell() already guards against
 # for the main player table. Anything reading these fields off a >1-week horizon call is a bug.
 DISPLAY_COLUMNS = ["team_code", "opponent_name", "opponent_short_name", "opponent_code", "was_home",
-                   "difficulty", "predicted_points_low", "predicted_points_high", "haul_prob", "ownership_pct"]
+                   "difficulty", "predicted_points_low", "predicted_points_high", "haul_prob", "ownership_pct", "season_ppg"]
 
 
 def load_nearest_players(predictions, horizon=1, start_week=1):

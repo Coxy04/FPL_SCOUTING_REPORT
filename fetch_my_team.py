@@ -986,43 +986,44 @@ def main():
     recommended_transfers = 0
     best_free_gain = 0.0  # best option that doesn't cost a hit -- what a hit has to beat
     best_free_transfers = 0
+    def build_scenario(squad, hit_cost):
+        total = starting_total(squad)
+        raw_gain = total - current_total
+        new_ids = {p["id"] for p in squad}
+        transferred_out = sorted((by_id[pid] for pid in current_ids if pid not in new_ids), key=lambda p: p["position"])
+        transferred_in = sorted((p for p in squad if p["id"] not in current_ids), key=lambda p: p["position"])
+
+        # Discount the predicted gain before netting off the hit -- the hit is a real, certain
+        # -4, the gain is an optimistic estimate, so comparing them undiscounted is comparing
+        # a hard cost against a soft benefit. Squad quotas force every transfer to be
+        # like-for-like by position, so the incoming players' positions are exactly the
+        # positions being changed, and averaging their rates weights the mix correctly.
+        rates = [
+            TRANSFER_GAIN_SHRINKAGE_BY_POSITION.get(p["position"], TRANSFER_GAIN_SHRINKAGE)
+            for p in transferred_in
+        ]
+        shrink = sum(rates) / len(rates) if rates else TRANSFER_GAIN_SHRINKAGE
+        expected_gain = raw_gain * shrink
+        net_gain = round(expected_gain - hit_cost, 2)
+        return {
+            "squad": squad,
+            "predicted_total": total,
+            "rating_pct": round(100 * total / top_total, 1) if top_total else None,
+            "hit_cost": hit_cost,
+            "raw_gain": round(raw_gain, 2),
+            "shrinkage_applied": round(shrink, 3),
+            "expected_gain": round(expected_gain, 2),
+            "net_gain": net_gain,
+            # Price pressure is a TIMING note on an already-chosen move, never a reason to
+            # choose it -- it predicts the market, not the football (see compute_price_pressure).
+            "transfers_out": [{**p, "price_pressure": price_pressure.get(p["id"])} for p in transferred_out],
+            "transfers_in": [{**p, "price_pressure": price_pressure.get(p["id"])} for p in transferred_in],
+        }
+
     for n in transfer_counts:
         hit_cost = max(0, n - free_transfers) * HIT_COST_PER_TRANSFER
         ranked = pick_top_transfer_scenarios(current_ids, current_value, bank_raw, all_players, n, current_total, TOP_N_OPTIONS)
-        scenario_list = []
-        for squad in ranked:
-            total = starting_total(squad)
-            raw_gain = total - current_total
-            new_ids = {p["id"] for p in squad}
-            transferred_out = sorted((by_id[pid] for pid in current_ids if pid not in new_ids), key=lambda p: p["position"])
-            transferred_in = sorted((p for p in squad if p["id"] not in current_ids), key=lambda p: p["position"])
-
-            # Discount the predicted gain before netting off the hit -- the hit is a real, certain
-            # -4, the gain is an optimistic estimate, so comparing them undiscounted is comparing
-            # a hard cost against a soft benefit. Squad quotas force every transfer to be
-            # like-for-like by position, so the incoming players' positions are exactly the
-            # positions being changed, and averaging their rates weights the mix correctly.
-            rates = [
-                TRANSFER_GAIN_SHRINKAGE_BY_POSITION.get(p["position"], TRANSFER_GAIN_SHRINKAGE)
-                for p in transferred_in
-            ]
-            shrink = sum(rates) / len(rates) if rates else TRANSFER_GAIN_SHRINKAGE
-            expected_gain = raw_gain * shrink
-            net_gain = round(expected_gain - hit_cost, 2)
-            scenario_list.append({
-                "squad": squad,
-                "predicted_total": total,
-                "rating_pct": round(100 * total / top_total, 1) if top_total else None,
-                "hit_cost": hit_cost,
-                "raw_gain": round(raw_gain, 2),
-                "shrinkage_applied": round(shrink, 3),
-                "expected_gain": round(expected_gain, 2),
-                "net_gain": net_gain,
-                # Price pressure is a TIMING note on an already-chosen move, never a reason to
-                # choose it -- it predicts the market, not the football (see compute_price_pressure).
-                "transfers_out": [{**p, "price_pressure": price_pressure.get(p["id"])} for p in transferred_out],
-                "transfers_in": [{**p, "price_pressure": price_pressure.get(p["id"])} for p in transferred_in],
-            })
+        scenario_list = [build_scenario(squad, hit_cost) for squad in ranked]
         # Re-rank by net gain, not by raw predicted total. Position-aware shrinkage means a
         # slightly-lower-raw option with a defender-heavy mix can genuinely beat a higher-raw one,
         # so the MILP's raw ordering is no longer the ordering that matters.
@@ -1036,6 +1037,27 @@ def main():
                 best_net_gain = best
                 recommended_transfers = n
         transfer_scenarios[str(n)] = scenario_list
+
+    # Recent-buy protection can hide the best move outright: in GW12 "Haaland -> Isak" never
+    # appeared because Haaland was a locked recent buy, and Nathan had to ask. The lock stays (it
+    # exists to stop churn), but every locked search is now shadowed by an unlocked one, and when
+    # undoing a recent buy beats the protected recommendation by more than the churn margin the
+    # alternative is printed and saved, flagged as such. It never changes the recommendation.
+    unlocked_alternative = None
+    if LOCKED_IDS & set(current_ids):
+        saved_lock = LOCKED_IDS
+        LOCKED_IDS = set()
+        try:
+            for n in transfer_counts:
+                hit_cost = max(0, n - free_transfers) * HIT_COST_PER_TRANSFER
+                for squad in pick_top_transfer_scenarios(current_ids, current_value, bank_raw, all_players, n, current_total, 1):
+                    s = build_scenario(squad, hit_cost)
+                    undone = [p["web_name"] for p in s["transfers_out"] if p["id"] in saved_lock]
+                    if undone and s["net_gain"] - best_net_gain >= CHURN_MARGIN and (
+                            unlocked_alternative is None or s["net_gain"] > unlocked_alternative["net_gain"]):
+                        unlocked_alternative = {**s, "transfers": n, "undoes": undone}
+        finally:
+            LOCKED_IDS = saved_lock
 
     # A hit only gets recommended if it clears the best hit-free option by a real margin -- see
     # HIT_DECISION_MARGIN. Without this the tool would call a sub-1-point edge for paying 4 points,
@@ -1124,6 +1146,13 @@ def main():
         "recommended_transfers": recommended_transfers,
         "recommended_net_gain": best_net_gain,
         "hit_rejected_as_marginal": hit_rejected,
+        "unlocked_alternative": None if unlocked_alternative is None else {
+            "transfers": unlocked_alternative["transfers"], "net_gain": unlocked_alternative["net_gain"],
+            "raw_gain": unlocked_alternative["raw_gain"], "hit_cost": unlocked_alternative["hit_cost"],
+            "undoes": unlocked_alternative["undoes"],
+            "transfers_out": [p["web_name"] for p in unlocked_alternative["transfers_out"]],
+            "transfers_in": [p["web_name"] for p in unlocked_alternative["transfers_in"]],
+        },
         "bank_plans": bank_plans,
         "chip_timing": chip_timing,
         "league": league,
@@ -1210,6 +1239,13 @@ def main():
         pct = player.get("league_ownership_pct")
         return f" ({pct:.0f}% of top {league['top_n']})" if league and pct is not None else ""
 
+    def move_text(out_player, in_player):
+        # Season PPG on both sides of every move. The model has no strong points-track-record
+        # signal of its own (see PPG_FEATURES), so a sale of a high-PPG player should be visible
+        # as exactly that -- De Cuyper (6.9 PPG) -> Silva (4.4) was offered in GW12 as "+13".
+        ppg = f" [PPG {out_player.get('season_ppg') or 0:.1f} -> {in_player.get('season_ppg') or 0:.1f}]"
+        return f"{out_player['web_name']} -> {in_player['web_name']}{league_note(in_player)}{ppg}"
+
     if league:
         print(f"  League context: {league['top_n']} rivals ahead of you in \"{league['league_name']}\" "
               f"-- the ownership % next to each incoming player below is how many of THEM already own "
@@ -1222,13 +1258,17 @@ def main():
             continue
         print(f"  With {n} transfer(s){hit_note}, top {len(options)} option(s):")
         for rank, s in enumerate(options, start=1):
-            moves = ", ".join(
-                f"{o['web_name']} -> {i['web_name']}{league_note(i)}"
-                for o, i in zip(s["transfers_out"], s["transfers_in"])
-            )
+            moves = ", ".join(move_text(o, i) for o, i in zip(s["transfers_out"], s["transfers_in"]))
             hit_part = f" - {s['hit_cost']} hit" if s["hit_cost"] else ""
             print(f"    {rank}. raw {s['raw_gain']:+.2f} x{s['shrinkage_applied']:.2f} -> "
                   f"{s['expected_gain']:+.2f}{hit_part} = net {s['net_gain']:+.2f}  -- {moves}")
+    if unlocked_alternative:
+        u = unlocked_alternative
+        moves = ", ".join(move_text(o, i) for o, i in zip(u["transfers_out"], u["transfers_in"]))
+        hit_part = f" - {u['hit_cost']} hit" if u["hit_cost"] else ""
+        print(f"  FLAG -- undoing a recent buy would do better than the protected recommendation (+{best_net_gain:.2f}):")
+        print(f"    {u['transfers']} transfer(s): raw {u['raw_gain']:+.2f} -> {u['expected_gain']:+.2f}{hit_part} = net {u['net_gain']:+.2f}  -- {moves}")
+        print(f"    Sells {', '.join(u['undoes'])}, bought within the last {RECENT_BUY_WEEKS} GWs. Protection is a churn guard, not a verdict -- your call.")
 
     if recommended_transfers == 0:
         print(f"\nRecommendation: HOLD. No transfer combination found nets a real gain over your "
@@ -1244,8 +1284,7 @@ def main():
     for plan in bank_plans[:8]:
         when = "act now" if not plan["wait_weeks"] else f"bank {plan['wait_weeks']}wk"
         label = f"{when}, {plan['transfers']} transfer(s) w/ {plan['free_transfers_then']} free"
-        moves = ", ".join(f"{o['web_name']}->{i['web_name']}{league_note(i)}"
-                          for o, i in zip(plan["transfers_out"], plan["transfers_in"]))
+        moves = ", ".join(move_text(o, i) for o, i in zip(plan["transfers_out"], plan["transfers_in"]))
         flag = "" if plan["calibrated"] else " *"
         print(f"  {label:<34}{plan['raw_gain']:<+9.2f}{plan['expected_gain']:<+12.2f}"
               f"{plan['hit_cost']:<6}{plan['net_gain']:<+9.2f}{moves}{flag}")

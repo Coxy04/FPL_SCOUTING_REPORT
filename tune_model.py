@@ -33,6 +33,7 @@ from fpl_ml_model import (
     DEFAULT_MODEL_PARAMS,
     NON_LGB_PARAM_KEYS,
     POSITION_FEATURES,
+    features_for,
     POSITION_MAP,
     POSITION_MODEL_PARAMS,
     compute_sample_weights,
@@ -109,8 +110,9 @@ def score_params(params, position_rows, folds):
         model = make_model(params)
         half_life = params.get("half_life_days", DEFAULT_MODEL_PARAMS["half_life_days"])
         weights = compute_sample_weights(train["date"], half_life_days=half_life, as_of=pd.Timestamp(train["date"].max(), tz="UTC"))
-        model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
-        predictions = model.predict(test[POSITION_FEATURES])
+        feats = features_for(position_rows["position"].iloc[0])
+        model.fit(train[feats], train["total_points"], sample_weight=weights)
+        predictions = model.predict(test[feats])
         denominator = params.get("playing_time_denominator", DEFAULT_MODEL_PARAMS["playing_time_denominator"])
         multiplier = np.minimum(1.0, test["minutes"].to_numpy() / denominator)
         predictions = np.clip(predictions * multiplier, 0, 15)

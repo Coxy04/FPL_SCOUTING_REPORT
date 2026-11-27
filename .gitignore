@@ -28,3 +28,5 @@ fpl_ml_match_predictions.json
 fpl_ml_team_matches.csv
 fpl_ml_match_model_validation.json
 fpl_ml_leagues_predictions.json
+fpl_ml_ppg_ablation.json
+fpl_ml_chase_ablation.json

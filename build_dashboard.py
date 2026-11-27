@@ -24,7 +24,7 @@ PLAYER_COLUMNS = [
     "opponent_name", "opponent_short_name", "opponent_code",
     "predicted_points", "predicted_points_low", "predicted_points_high",
     "predicted_points_5gw", "points_per_million",
-    "season_points", "recent_points_avg",
+    "season_points", "recent_points_avg", "season_ppg",
     "underperformance_gap", "ownership_pct", "goals_vs_npxg90",
     "minutes", "minutes_sd", "expected_goals", "expected_assists",
     "expected_goals_conceded", "difficulty", "team_xg_for_form",

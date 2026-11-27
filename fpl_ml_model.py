@@ -107,6 +107,8 @@ FEATURES = [
     "is_penalty_taker",
     "is_freekick_taker",
     "is_corner_taker",
+    "points_form",
+    "season_ppg",
     "position_GK",
     "position_DEF",
     "position_MID",
@@ -118,6 +120,29 @@ FEATURES = [
 # for the same tree splits this way, and per-position sample sizes (roughly 1,000-4,200 rows
 # each) are large enough that specializing doesn't starve any of them.
 POSITION_FEATURES = [f for f in FEATURES if not f.startswith("position_")]
+
+# Points track record, lagged like every other match stat. The GW8 fundamental review found season
+# points-per-game the single best predictor of the next five weeks (Spearman 0.36, vs 0.06 for the
+# fixture run) and the model had no such feature: it rated De Cuyper (76 pts, 6.9 PPG) below Hill
+# (56) because his points come from goals, assists and bonus rather than defensive-action counts.
+#   points_form -- mean total_points over the last TEAM_FORM_WINDOW matches (shifted, so pre-match)
+#   season_ppg  -- season-to-date points per appearance (minutes > 0), shifted; 0 before the first
+# ablation_ppg_features.py is the evidence for keeping them.
+PPG_FEATURES = ["points_form", "season_ppg"]
+
+# ablation_ppg_features.py (deployment replay, 8 cutoffs) and backtest_model.py both came back a
+# wash overall: next-week cross-position rho 0.111 -> 0.117, five-week-sum rho 0.375 -> 0.363 with
+# top-15 actual 23.1 -> 23.7. By position it split: DEF (the position the complaint was about) a
+# shade better on both horizons, FWD worse on both (five-week rho 0.508 -> 0.440, next-week 0.091
+# -> 0.048). Forwards are the position where the model's own signal is strongest live, so the two
+# features are kept out of that model only. Judgement on noisy evidence, not a measured optimum.
+POSITION_FEATURE_EXCLUSIONS = {"FWD": PPG_FEATURES}
+
+
+def features_for(position):
+    """The feature list a given position's models train and predict on."""
+    excluded = POSITION_FEATURE_EXCLUSIONS.get(position, [])
+    return [f for f in POSITION_FEATURES if f not in excluded]
 
 DEFAULT_MODEL_PARAMS = {
     "n_estimators": 250,
@@ -196,7 +221,7 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 0.307, "DEF": 1.441, "MID": 1.492, "FWD": 1.506}
+QUANTILE_MARGIN = {"GK": 0.549, "DEF": 1.382, "MID": 1.477, "FWD": 1.487}
 
 
 def get_quantile_margin(position):
@@ -733,6 +758,8 @@ def build_prior_season_rows(merged_gw, difficulty_lookup, team_names, id_map, te
                 "recoveries": row.recoveries,
                 "tackles": row.tackles,
                 "defensive_contribution": row.defensive_contribution,
+                "points_form": row.points_form,
+                "season_ppg": row.season_ppg,
                 "own_days_rest": own_rest,
                 "opp_days_rest": opp_rest,
                 **prior_set_piece_lookup.get(row.element, DEFAULT_SET_PIECE_FLAGS),
@@ -781,6 +808,8 @@ def add_features(frame):
         "is_penalty_taker",
         "is_freekick_taker",
         "is_corner_taker",
+        "points_form",
+        "season_ppg",
     ]
     for column in numeric:
         frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0)
@@ -845,10 +874,30 @@ def add_lagged_match_form(frame, group_col=None):
         minutes_sd = rolling_sd(frame["minutes"])
         minutes_recent = recency_weighted(frame["minutes"])
 
+    points = pd.to_numeric(frame.get("total_points", 0), errors="coerce").fillna(0)
+    played = (pd.to_numeric(frame["minutes"], errors="coerce").fillna(0) > 0).astype(float)
+
+    def season_to_date_ppg(pts_played):
+        # pts_played is a 2-col frame: cumulative points over played matches / cumulative appearances,
+        # both shifted one match so a row only sees what came before it.
+        cum_pts = (pts_played["pts"] * pts_played["played"]).cumsum().shift(1)
+        cum_app = pts_played["played"].cumsum().shift(1)
+        return (cum_pts / cum_app.replace(0, np.nan)).fillna(0)
+
+    pp = pd.DataFrame({"pts": points, "played": played}, index=frame.index)
+    if group_col:
+        points_form = points.groupby(frame[group_col]).transform(rolling_form)
+        season_ppg = pd.concat([season_to_date_ppg(g) for _, g in pp.groupby(frame[group_col], sort=False)]).reindex(frame.index)
+    else:
+        points_form = rolling_form(points)
+        season_ppg = season_to_date_ppg(pp)
+
     for column in LAGGED_MATCH_STATS:
         frame[column] = rolling_mean[column]
     frame["minutes"] = minutes_recent.fillna(0)
     frame["minutes_sd"] = minutes_sd.fillna(0)
+    frame["points_form"] = points_form.fillna(0)
+    frame["season_ppg"] = season_ppg.fillna(0)
     return frame
 
 
@@ -936,6 +985,8 @@ def build_training_rows(elements, fixtures, teams, session, team_form_lookup, un
                     "recoveries": lagged["recoveries"],
                     "tackles": lagged["tackles"],
                     "defensive_contribution": lagged["defensive_contribution"],
+                    "points_form": lagged["points_form"],
+                    "season_ppg": lagged["season_ppg"],
                     "own_days_rest": own_rest,
                     "opp_days_rest": opp_rest,
                     **set_piece,
@@ -976,6 +1027,11 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             history = list(histories.get(player["id"], []))
         else:
             history = get_json(session, f"element-summary/{player['id']}/").get("history", [])
+        # Season-to-date PPG needs the whole season, not the 6-match form window that follows.
+        # Same definition as the training rows (points per appearance with minutes > 0); here
+        # nothing is shifted because every match in the history has already been played.
+        season_appearances = [m for m in history if m.get("minutes", 0)]
+        season_ppg = (sum(m.get("total_points", 0) for m in season_appearances) / len(season_appearances)) if season_appearances else 0.0
         history = history[-6:]
         if not history:
             continue
@@ -1040,6 +1096,8 @@ def recent_player_features(elements, fixtures, teams, session, current_team_form
             "key_passes90": player_stats.get("key_passes90", 0),
             **set_piece_flags(player),
             "recent_points_avg": averages.get("total_points", 0),
+            "points_form": averages.get("total_points", 0),
+            "season_ppg": season_ppg,
             "ownership_pct": float(player.get("selected_by_percent", 0) or 0),
             # Both sides non-penalty now: FPL's goals_scored includes penalties, npxG doesn't --
             # diffing those was comparing different things. Understat's own npg90 fixes that.
@@ -1260,25 +1318,26 @@ def main():
     importance_tables = []
     for position in POSITION_MAP.values():
         subset = training[training["position"] == position]
+        feats = features_for(position)
         weights = compute_sample_weights(subset["date"], half_life_days=get_half_life_days(position))
         model = make_model(position)
-        model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
+        model.fit(subset[feats], subset["total_points"], sample_weight=weights)
         models[position] = model
 
         low_model = make_quantile_model(position, QUANTILE_LOW_ALPHA)
-        low_model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
+        low_model.fit(subset[feats], subset["total_points"], sample_weight=weights)
         high_model = make_quantile_model(position, QUANTILE_HIGH_ALPHA)
-        high_model.fit(subset[POSITION_FEATURES], subset["total_points"], sample_weight=weights)
+        high_model.fit(subset[feats], subset["total_points"], sample_weight=weights)
         quantile_models[position] = (low_model, high_model)
 
         haul_model = make_haul_model(position)
-        haul_model.fit(subset[POSITION_FEATURES], (subset["total_points"] >= HAUL_THRESHOLD).astype(int), sample_weight=weights)
+        haul_model.fit(subset[feats], (subset["total_points"] >= HAUL_THRESHOLD).astype(int), sample_weight=weights)
         haul_models[position] = haul_model
 
         position_importance = pd.DataFrame(
             {
                 "position": position,
-                "feature": POSITION_FEATURES,
+                "feature": feats,
                 "importance_gain": model.booster_.feature_importance(importance_type="gain"),
                 "importance_split": model.booster_.feature_importance(importance_type="split"),
             }
@@ -1309,9 +1368,9 @@ def main():
         # happens to often be small, not a genuine "nothing happening" zero.
         mask = ((upcoming["position"] == position) & (~upcoming["is_blank"])).to_numpy()
         if mask.any():
-            X = featured_upcoming.loc[mask, POSITION_FEATURES]
+            X = featured_upcoming.loc[mask, features_for(position)]
             upcoming.loc[mask, "predicted_points"] = model.predict(X)
-            explanations = explain_predictions(model, X, POSITION_FEATURES)
+            explanations = explain_predictions(model, X, features_for(position))
             upcoming.loc[mask, "explanation"] = [json.dumps(e) for e in explanations]
 
             low_model, high_model = quantile_models[position]

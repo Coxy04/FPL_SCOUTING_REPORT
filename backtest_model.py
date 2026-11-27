@@ -39,6 +39,7 @@ from fpl_ml_model import (
     BASE_URL,
     HAUL_THRESHOLD,
     POSITION_FEATURES,
+    features_for,
     POSITION_MAP,
     PREDICTION_HISTORY_DIR,
     PRIOR_SEASON_ARCHIVE,
@@ -204,12 +205,13 @@ def build_archive_rows(archive_season=PRIOR_SEASON_ARCHIVE, understat_season=PRI
 
 
 def evaluate_position(train, test, position):
+    feats = features_for(position)
     model = make_model(position)
     weights = compute_sample_weights(
         train["date"], half_life_days=get_half_life_days(position), as_of=pd.Timestamp(train["date"].max(), tz="UTC")
     )
-    model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
-    predictions = model.predict(test[POSITION_FEATURES])
+    model.fit(train[feats], train["total_points"], sample_weight=weights)
+    predictions = model.predict(test[feats])
     multiplier = np.minimum(1.0, test["minutes"].to_numpy() / get_playing_time_denominator(position))
     predictions = np.clip(predictions * multiplier, 0, 15)
     actual = test["total_points"].to_numpy()
@@ -225,11 +227,11 @@ def evaluate_position(train, test, position):
     # trained on -- trusting the theory without checking would be exactly the "we can just make
     # up a number" mistake this whole backtest exists to avoid.
     low_model = make_quantile_model(position, QUANTILE_LOW_ALPHA)
-    low_model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
+    low_model.fit(train[feats], train["total_points"], sample_weight=weights)
     high_model = make_quantile_model(position, QUANTILE_HIGH_ALPHA)
-    high_model.fit(train[POSITION_FEATURES], train["total_points"], sample_weight=weights)
-    low_raw = low_model.predict(test[POSITION_FEATURES])
-    high_raw = high_model.predict(test[POSITION_FEATURES])
+    high_model.fit(train[feats], train["total_points"], sample_weight=weights)
+    low_raw = low_model.predict(test[feats])
+    high_raw = high_model.predict(test[feats])
     low = np.clip(np.minimum(low_raw, high_raw) * multiplier, 0, 15)
     high = np.clip(np.maximum(low_raw, high_raw) * multiplier, 0, 15)
     low = np.minimum(low, predictions)
@@ -252,8 +254,8 @@ def evaluate_position(train, test, position):
     haul_auc = None
     haul_pool_prob = haul_pool_rate = None
     if haul_target.nunique() == 2:
-        haul_model.fit(train[POSITION_FEATURES], haul_target, sample_weight=weights)
-        haul_prob = np.clip(haul_model.predict_proba(test[POSITION_FEATURES])[:, 1] * multiplier, 0, 1)
+        haul_model.fit(train[feats], haul_target, sample_weight=weights)
+        haul_prob = np.clip(haul_model.predict_proba(test[feats])[:, 1] * multiplier, 0, 1)
         hauled = (actual >= HAUL_THRESHOLD).astype(int)
         if hauled.sum() > 0 and hauled.sum() < len(hauled):
             haul_auc = float(roc_auc_score(hauled, haul_prob))
