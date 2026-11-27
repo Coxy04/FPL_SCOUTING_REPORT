@@ -196,7 +196,7 @@ def make_quantile_model(position, alpha):
 # (widen both bounds by the (1 - miscoverage) quantile of held-out |actual - bound| residuals) that
 # backtest_model.py recomputes and rewrites here every run, so the interval's claimed 80% keeps
 # being backed by a real, current measurement rather than trusting the model's raw quantile output.
-QUANTILE_MARGIN = {"GK": 0.187, "DEF": 0.497, "MID": 1.141, "FWD": 2.457}
+QUANTILE_MARGIN = {"GK": 0.307, "DEF": 1.441, "MID": 1.492, "FWD": 1.506}
 
 
 def get_quantile_margin(position):
