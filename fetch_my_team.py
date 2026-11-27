@@ -13,6 +13,7 @@ as browser JS on the GitHub Pages site directly -- that's a separate, deferred p
 letting other people check their own team; this script only ever looks up Nathan's own team ID.
 """
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -889,6 +890,17 @@ def main():
     LOCKED_IDS = {pid for pid in recent_in if pid in current_ids
                   and fpl_elements[pid]["status"] == "a"
                   and fpl_elements[pid].get("chance_of_playing_next_round") in (None, 100)}
+    # --keep NAME [NAME ...]: players Nathan has decided to hold this week regardless of the model
+    # (e.g. "Calafiori keeps getting clean sheets"). Locks them like a recent buy so the transfer
+    # search has to find its best plan AROUND them -- that answers "what if I keep X" with the same
+    # optimiser instead of a guess. Not persisted; it only shapes this run.
+    if "--keep" in sys.argv:
+        keep_names = {n.lower() for n in sys.argv[sys.argv.index("--keep") + 1:] if not n.startswith("--")}
+        kept = {pid for pid in current_ids if fpl_elements[pid]["web_name"].lower() in keep_names}
+        missing = keep_names - {fpl_elements[pid]["web_name"].lower() for pid in kept}
+        if missing:
+            print(f"  --keep: not in the squad, ignored: {sorted(missing)}")
+        LOCKED_IDS |= kept
     protected_names = sorted(fpl_elements[pid]["web_name"] for pid in LOCKED_IDS)
     # Budget must be built from what these players would actually SELL for, not their listed
     # prices -- see compute_selling_prices. Using listed prices overstates the budget and lets the
